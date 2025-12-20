@@ -7,7 +7,6 @@ interface Profile {
   user_id: string;
   username: string;
   userid: string;
-  email: string | null;
   avatar_url: string | null;
 }
 
@@ -99,7 +98,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
           user_id: data.user.id,
           username,
           userid,
-          email,
         });
       
       if (profileError) {

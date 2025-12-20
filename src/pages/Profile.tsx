@@ -110,7 +110,7 @@ const Profile = () => {
             <div className="flex-1">
               <h1 className="text-2xl font-bold">{profile?.username}</h1>
               <p className="text-muted-foreground">@{profile?.userid}</p>
-              <p className="text-sm text-muted-foreground mt-1">{profile?.email}</p>
+              <p className="text-sm text-muted-foreground mt-1">{user?.email}</p>
             </div>
           </div>
         </div>

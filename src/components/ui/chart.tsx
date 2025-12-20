@@ -58,6 +58,12 @@ const ChartContainer = React.forwardRef<
 });
 ChartContainer.displayName = "Chart";
 
+/**
+ * SECURITY NOTE: This component uses dangerouslySetInnerHTML for CSS variable injection.
+ * Only static theme configuration from ChartConfig should flow here.
+ * NEVER pass user-controlled data to ChartConfig.color or ChartConfig.theme values.
+ * All color values must come from compile-time theme configuration only.
+ */
 const ChartStyle = ({ id, config }: { id: string; config: ChartConfig }) => {
   const colorConfig = Object.entries(config).filter(([_, config]) => config.theme || config.color);
 
