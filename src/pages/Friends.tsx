@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { Search, UserPlus, MessageCircle, X, Check, User, Clock } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { isValidUUID } from '@/lib/validation';
 
 interface Profile {
   id: string;
@@ -55,6 +56,12 @@ const Friends = () => {
 
   const fetchData = async () => {
     if (!user) return;
+    
+    // Validate UUID to prevent injection
+    if (!isValidUUID(user.id)) {
+      toast.error('Invalid user session');
+      return;
+    }
 
     // Fetch friends where user is either user_id or friend_id
     const { data: friendsData } = await supabase
