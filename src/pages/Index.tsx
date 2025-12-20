@@ -1,4 +1,5 @@
 import { useState, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import HeroSection from '@/components/HeroSection';
 import FilterBar from '@/components/FilterBar';
@@ -7,6 +8,7 @@ import HackathonCalendar from '@/components/HackathonCalendar';
 import { hackathons } from '@/data/hackathons';
 
 const Index = () => {
+  const navigate = useNavigate();
   const [view, setView] = useState<'grid' | 'calendar'>('grid');
   const [search, setSearch] = useState('');
   const [selectedRegion, setSelectedRegion] = useState('All Regions');
@@ -42,7 +44,12 @@ const Index = () => {
         {view === 'grid' ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {filteredHackathons.map((hackathon, idx) => (
-              <HackathonCard key={hackathon.id} hackathon={hackathon} delay={idx * 50} />
+              <HackathonCard 
+                key={hackathon.id} 
+                hackathon={hackathon} 
+                delay={idx * 50}
+                onClick={() => navigate(`/hackathon/${hackathon.id}`)}
+              />
             ))}
           </div>
         ) : (

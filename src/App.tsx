@@ -10,6 +10,7 @@ import CreateTeam from "./pages/CreateTeam";
 import Teams from "./pages/Teams";
 import Requests from "./pages/Requests";
 import TeamChat from "./pages/TeamChat";
+import HackathonDetail from "./pages/HackathonDetail";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -24,6 +25,7 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/auth" element={<Auth />} />
+            <Route path="/hackathon/:id" element={<HackathonDetail />} />
             <Route path="/hackathon/:hackathonId/team" element={<CreateTeam />} />
             <Route path="/teams" element={<Teams />} />
             <Route path="/requests" element={<Requests />} />

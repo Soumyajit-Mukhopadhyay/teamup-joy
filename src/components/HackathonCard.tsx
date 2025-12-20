@@ -1,43 +1,67 @@
-import { Calendar, MapPin, ExternalLink, Share2, Users } from 'lucide-react';
+import { Calendar, MapPin, ExternalLink, Share2, CalendarPlus, Globe } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Hackathon } from '@/data/hackathons';
 import { format, parseISO } from 'date-fns';
-import { useAuth } from '@/contexts/AuthContext';
-import { useNavigate } from 'react-router-dom';
 import { toast } from 'sonner';
 
 interface HackathonCardProps {
   hackathon: Hackathon;
   delay?: number;
+  onClick?: () => void;
 }
 
-const HackathonCard = ({ hackathon, delay = 0 }: HackathonCardProps) => {
-  const { user } = useAuth();
-  const navigate = useNavigate();
-
+const HackathonCard = ({ hackathon, delay = 0, onClick }: HackathonCardProps) => {
   const formatDate = (dateStr: string) => {
     return format(parseISO(dateStr), 'MMM d, yyyy');
   };
 
-  const handleCreateTeam = () => {
-    if (!user) {
-      toast.error('Please sign in to create a team');
-      navigate('/auth');
-      return;
+  const handleShare = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const shareData = {
+      title: hackathon.name,
+      text: hackathon.description,
+      url: hackathon.url,
+    };
+    
+    if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
+      try {
+        await navigator.share(shareData);
+      } catch (err) {
+        // User cancelled or error
+      }
+    } else {
+      // Fallback to clipboard
+      navigator.clipboard.writeText(hackathon.url);
+      toast.success('Link copied to clipboard!');
     }
-    navigate(`/hackathon/${hackathon.id}/team`);
   };
 
-  const handleShare = () => {
-    navigator.clipboard.writeText(window.location.origin + `/hackathon/${hackathon.id}`);
-    toast.success('Link copied to clipboard!');
+  const handleAddToCalendar = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    const startDate = parseISO(hackathon.startDate);
+    const endDate = parseISO(hackathon.endDate);
+    
+    const formatGoogleDate = (date: Date) => {
+      return format(date, "yyyyMMdd");
+    };
+    
+    const googleCalendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(hackathon.name)}&dates=${formatGoogleDate(startDate)}/${formatGoogleDate(endDate)}&details=${encodeURIComponent(hackathon.description + '\n\nWebsite: ' + hackathon.url)}&location=${encodeURIComponent(hackathon.location)}`;
+    
+    window.open(googleCalendarUrl, '_blank');
+    toast.success('Opening Google Calendar...');
+  };
+
+  const handleVisit = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    window.open(hackathon.url, '_blank');
   };
 
   return (
     <div 
-      className="group glass-card p-5 card-hover animate-fade-in"
+      className="group glass-card p-5 card-hover animate-fade-in cursor-pointer"
       style={{ animationDelay: `${delay}ms` }}
+      onClick={onClick}
     >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2">
@@ -47,9 +71,9 @@ const HackathonCard = ({ hackathon, delay = 0 }: HackathonCardProps) => {
           </span>
         </div>
         {hackathon.isGlobal ? (
-          <span className="text-lg">🌐</span>
+          <Globe className="h-5 w-5 text-muted-foreground" />
         ) : (
-          <span className="text-lg">🇮🇳</span>
+          <span className="text-xs font-bold bg-muted px-2 py-1 rounded">IN</span>
         )}
       </div>
 
@@ -84,7 +108,7 @@ const HackathonCard = ({ hackathon, delay = 0 }: HackathonCardProps) => {
         <Button 
           variant="secondary" 
           className="flex-1 gap-2"
-          onClick={() => window.open(hackathon.url, '_blank')}
+          onClick={handleVisit}
         >
           <ExternalLink className="h-4 w-4" />
           Visit
@@ -92,10 +116,10 @@ const HackathonCard = ({ hackathon, delay = 0 }: HackathonCardProps) => {
         <Button 
           variant="outline" 
           size="icon"
-          onClick={handleCreateTeam}
-          title="Create Team"
+          onClick={handleAddToCalendar}
+          title="Add to Google Calendar"
         >
-          <Users className="h-4 w-4" />
+          <CalendarPlus className="h-4 w-4" />
         </Button>
         <Button 
           variant="outline" 

@@ -144,10 +144,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     const { data, error } = await supabase
       .from('profiles')
       .select('userid')
-      .eq('userid', userid)
-      .single();
+      .eq('userid', userid.toLowerCase())
+      .maybeSingle();
     
-    return !data && !error;
+    // Available if no data found (null) and no error
+    return data === null && !error;
   };
 
   const generateUserIdSuggestions = async (username: string): Promise<string[]> => {
