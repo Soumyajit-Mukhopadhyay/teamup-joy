@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,7 @@ interface Message {
     username: string;
     userid: string;
   };
+  signedUrl?: string; // For displaying files with signed URLs
 }
 
 interface TeamMember {
@@ -78,7 +79,16 @@ const TeamChat = () => {
             .eq('user_id', newMsg.user_id)
             .maybeSingle();
 
-          setMessages(prev => [...prev, { ...newMsg, profile: profile || undefined }]);
+          // Generate signed URL if file exists
+          let signedUrl: string | undefined;
+          if (newMsg.file_url) {
+            const { data: signedData } = await supabase.storage
+              .from('team-files')
+              .createSignedUrl(newMsg.file_url, 3600);
+            signedUrl = signedData?.signedUrl;
+          }
+
+          setMessages(prev => [...prev, { ...newMsg, profile: profile || undefined, signedUrl }]);
         }
       )
       .subscribe();
@@ -155,10 +165,24 @@ const TeamChat = () => {
         .select('user_id, username, userid')
         .in('user_id', userIds);
 
-      const messagesWithProfiles = data.map(msg => ({
-        ...msg,
-        profile: profiles?.find(p => p.user_id === msg.user_id)
-      }));
+      // Generate signed URLs for messages with files
+      const messagesWithProfiles = await Promise.all(
+        data.map(async (msg) => {
+          let signedUrl: string | undefined;
+          if (msg.file_url) {
+            // file_url now stores the path, not the public URL
+            const { data: signedData } = await supabase.storage
+              .from('team-files')
+              .createSignedUrl(msg.file_url, 3600);
+            signedUrl = signedData?.signedUrl;
+          }
+          return {
+            ...msg,
+            profile: profiles?.find(p => p.user_id === msg.user_id),
+            signedUrl,
+          };
+        })
+      );
 
       setMessages(messagesWithProfiles);
     }
@@ -209,25 +233,22 @@ const TeamChat = () => {
 
     try {
       const fileExt = file.name.split('.').pop();
-      const fileName = `${user.id}/${Date.now()}.${fileExt}`;
+      // Organize files by team_id for RLS policy compliance
+      const filePath = `${teamId}/${Date.now()}_${user.id}.${fileExt}`;
 
       const { error: uploadError } = await supabase.storage
         .from('team-files')
-        .upload(fileName, file);
+        .upload(filePath, file);
 
       if (uploadError) throw uploadError;
 
-      const { data: { publicUrl } } = supabase.storage
-        .from('team-files')
-        .getPublicUrl(fileName);
-
-      // Send message with file
+      // Store the file path (not public URL) for signed URL generation
       const { error: msgError } = await supabase
         .from('messages')
         .insert({
           team_id: teamId,
           user_id: user.id,
-          file_url: publicUrl,
+          file_url: filePath, // Store path, not public URL
           file_name: file.name,
           file_type: file.type,
         });
@@ -243,6 +264,19 @@ const TeamChat = () => {
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
+  };
+
+  // Helper to get signed URL for file access
+  const getSignedUrl = async (filePath: string): Promise<string | null> => {
+    const { data, error } = await supabase.storage
+      .from('team-files')
+      .createSignedUrl(filePath, 3600); // 1 hour expiry
+    
+    if (error) {
+      console.error('Failed to get signed URL:', error);
+      return null;
+    }
+    return data.signedUrl;
   };
 
   const getFileIcon = (fileType: string) => {
@@ -322,19 +356,19 @@ const TeamChat = () => {
                           <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                         </div>
                       )}
-                      {msg.file_url && (
+                      {msg.file_url && msg.signedUrl && (
                         <div className={`rounded-lg p-3 mt-1 ${isOwn ? 'bg-primary/20' : 'bg-secondary'}`}>
                           {msg.file_type?.startsWith('image/') ? (
-                            <a href={msg.file_url} target="_blank" rel="noopener noreferrer">
+                            <a href={msg.signedUrl} target="_blank" rel="noopener noreferrer">
                               <img
-                                src={msg.file_url}
+                                src={msg.signedUrl}
                                 alt={msg.file_name || 'Image'}
                                 className="max-w-full max-h-48 rounded"
                               />
                             </a>
                           ) : (
                             <a
-                              href={msg.file_url}
+                              href={msg.signedUrl}
                               download={msg.file_name}
                               className="flex items-center gap-2 text-sm hover:underline"
                             >
