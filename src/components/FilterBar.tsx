@@ -9,6 +9,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { regions, topics } from '@/data/hackathons';
+import AddHackathonModal from './AddHackathonModal';
 
 interface FilterBarProps {
   view: 'grid' | 'calendar';
@@ -19,6 +20,7 @@ interface FilterBarProps {
   setSelectedRegion: (region: string) => void;
   selectedTopic: string;
   setSelectedTopic: (topic: string) => void;
+  onAddHackathon?: (hackathon: any) => void;
 }
 
 const FilterBar = ({
@@ -30,40 +32,46 @@ const FilterBar = ({
   setSelectedRegion,
   selectedTopic,
   setSelectedTopic,
+  onAddHackathon,
 }: FilterBarProps) => {
   return (
-    <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4 py-6 animate-fade-in">
-      {/* View Toggle */}
-      <div className="flex rounded-lg border border-border p-1 bg-secondary/50">
-        <Button
-          variant={view === 'grid' ? 'default' : 'ghost'}
-          size="sm"
-          onClick={() => setView('grid')}
-          className={`gap-2 ${view === 'grid' ? 'btn-gradient' : ''}`}
-        >
-          <Grid className="h-4 w-4" />
-          Grid View
-        </Button>
-        <Button
-          variant={view === 'calendar' ? 'default' : 'ghost'}
-          size="sm"
-          onClick={() => setView('calendar')}
-          className={`gap-2 ${view === 'calendar' ? 'btn-gradient' : ''}`}
-        >
-          <Calendar className="h-4 w-4" />
-          Calendar
-        </Button>
+    <div className="flex flex-col gap-4 py-6 animate-fade-in">
+      <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-between gap-4">
+        {/* View Toggle */}
+        <div className="flex rounded-lg border border-border p-1 bg-secondary/50">
+          <Button
+            variant={view === 'grid' ? 'default' : 'ghost'}
+            size="sm"
+            onClick={() => setView('grid')}
+            className={`gap-2 ${view === 'grid' ? 'btn-gradient' : ''}`}
+          >
+            <Grid className="h-4 w-4" />
+            Grid View
+          </Button>
+          <Button
+            variant={view === 'calendar' ? 'default' : 'ghost'}
+            size="sm"
+            onClick={() => setView('calendar')}
+            className={`gap-2 ${view === 'calendar' ? 'btn-gradient' : ''}`}
+          >
+            <Calendar className="h-4 w-4" />
+            Calendar
+          </Button>
+        </div>
+
+        {/* Add Hackathon Button */}
+        <AddHackathonModal onAdd={onAddHackathon} />
       </div>
 
       {/* Filters */}
       <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-        <div className="relative">
+        <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
           <Input
             placeholder="Search hackathons..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="pl-9 w-full sm:w-64 input-dark"
+            className="pl-9 w-full input-dark"
           />
         </div>
 

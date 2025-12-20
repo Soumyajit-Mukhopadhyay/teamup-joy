@@ -84,16 +84,16 @@ const Auth = () => {
     setLoading(true);
     setErrors({});
 
+    // Email validation for all flows
+    const emailResult = z.string().email('Invalid email format').safeParse(formData.email);
+    if (!emailResult.success) {
+      setErrors({ email: 'Invalid email ID. Please enter a valid email address.' });
+      setLoading(false);
+      return;
+    }
+
     try {
       if (isForgotPassword) {
-        // Validate email
-        const emailResult = z.string().email().safeParse(formData.email);
-        if (!emailResult.success) {
-          setErrors({ email: 'Please enter a valid email address' });
-          setLoading(false);
-          return;
-        }
-        
         const { error } = await resetPassword(formData.email);
         if (error) throw error;
         toast.success('Password reset email sent! Check your inbox.');
@@ -131,14 +131,6 @@ const Auth = () => {
         }
         toast.success('Account created successfully! Welcome aboard!');
       } else {
-        // Validate email for sign in
-        const emailResult = z.string().email().safeParse(formData.email);
-        if (!emailResult.success) {
-          setErrors({ email: 'Please enter a valid email address' });
-          setLoading(false);
-          return;
-        }
-
         const { error } = await signIn(formData.email, formData.password);
         if (error) {
           if (error.message?.includes('Invalid login credentials')) {
@@ -147,6 +139,7 @@ const Auth = () => {
           throw error;
         }
         toast.success('Signed in successfully!');
+      }
       }
     } catch (error: any) {
       toast.error(error.message || 'An error occurred. Please try again.');

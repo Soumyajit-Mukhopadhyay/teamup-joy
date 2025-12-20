@@ -11,6 +11,10 @@ import Teams from "./pages/Teams";
 import Requests from "./pages/Requests";
 import TeamChat from "./pages/TeamChat";
 import HackathonDetail from "./pages/HackathonDetail";
+import Profile from "./pages/Profile";
+import Friends from "./pages/Friends";
+import FriendChat from "./pages/FriendChat";
+import UserProfile from "./pages/UserProfile";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -30,6 +34,10 @@ const App = () => (
             <Route path="/teams" element={<Teams />} />
             <Route path="/requests" element={<Requests />} />
             <Route path="/team/:teamId/chat" element={<TeamChat />} />
+            <Route path="/profile" element={<Profile />} />
+            <Route path="/friends" element={<Friends />} />
+            <Route path="/chat/:friendId" element={<FriendChat />} />
+            <Route path="/user/:userid" element={<UserProfile />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
