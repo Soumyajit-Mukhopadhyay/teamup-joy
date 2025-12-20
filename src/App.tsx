@@ -6,6 +6,10 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "@/contexts/AuthContext";
 import Index from "./pages/Index";
 import Auth from "./pages/Auth";
+import CreateTeam from "./pages/CreateTeam";
+import Teams from "./pages/Teams";
+import Requests from "./pages/Requests";
+import TeamChat from "./pages/TeamChat";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -20,6 +24,10 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/auth" element={<Auth />} />
+            <Route path="/hackathon/:hackathonId/team" element={<CreateTeam />} />
+            <Route path="/teams" element={<Teams />} />
+            <Route path="/requests" element={<Requests />} />
+            <Route path="/team/:teamId/chat" element={<TeamChat />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>
