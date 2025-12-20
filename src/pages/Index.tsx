@@ -5,7 +5,8 @@ import HeroSection from '@/components/HeroSection';
 import FilterBar from '@/components/FilterBar';
 import HackathonCard from '@/components/HackathonCard';
 import HackathonCalendar from '@/components/HackathonCalendar';
-import { hackathons } from '@/data/hackathons';
+import { hackathons as initialHackathons, Hackathon } from '@/data/hackathons';
+import { toast } from 'sonner';
 
 const Index = () => {
   const navigate = useNavigate();
@@ -13,16 +14,26 @@ const Index = () => {
   const [search, setSearch] = useState('');
   const [selectedRegion, setSelectedRegion] = useState('All Regions');
   const [selectedTopic, setSelectedTopic] = useState('All Topics');
+  const [customHackathons, setCustomHackathons] = useState<Hackathon[]>([]);
+
+  const allHackathons = useMemo(() => {
+    return [...initialHackathons, ...customHackathons];
+  }, [customHackathons]);
 
   const filteredHackathons = useMemo(() => {
-    return hackathons.filter(h => {
+    return allHackathons.filter(h => {
       const matchesSearch = h.name.toLowerCase().includes(search.toLowerCase()) ||
         h.description.toLowerCase().includes(search.toLowerCase());
       const matchesRegion = selectedRegion === 'All Regions' || h.region === selectedRegion;
       const matchesTopic = selectedTopic === 'All Topics' || h.tags.includes(selectedTopic);
       return matchesSearch && matchesRegion && matchesTopic;
     });
-  }, [search, selectedRegion, selectedTopic]);
+  }, [allHackathons, search, selectedRegion, selectedTopic]);
+
+  const handleAddHackathon = (hackathon: Hackathon) => {
+    setCustomHackathons(prev => [...prev, hackathon]);
+    toast.success('Hackathon added!');
+  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -39,6 +50,7 @@ const Index = () => {
           setSelectedRegion={setSelectedRegion}
           selectedTopic={selectedTopic}
           setSelectedTopic={setSelectedTopic}
+          onAddHackathon={handleAddHackathon}
         />
 
         {view === 'grid' ? (
