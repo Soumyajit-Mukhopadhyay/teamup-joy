@@ -9,6 +9,7 @@ import { User, Calendar, Clock, UserPlus, MessageCircle, Search, Check } from 'l
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { hackathons } from '@/data/hackathons';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { isValidUUID } from '@/lib/validation';
 
 interface Profile {
   user_id: string;
@@ -67,6 +68,12 @@ const UserProfile = () => {
 
     // Check friend status
     if (user && user.id !== profileData.user_id) {
+      // Validate UUIDs to prevent injection
+      if (!isValidUUID(user.id) || !isValidUUID(profileData.user_id)) {
+        toast.error('Invalid user ID');
+        return;
+      }
+      
       const { data: friendData } = await supabase
         .from('friends')
         .select('*')

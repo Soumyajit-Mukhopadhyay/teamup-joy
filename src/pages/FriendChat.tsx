@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { Send, ArrowLeft, Paperclip, X, FileText, Image as ImageIcon } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { format } from 'date-fns';
+import { isValidUUID } from '@/lib/validation';
 
 interface Message {
   id: string;
@@ -66,6 +67,12 @@ const FriendChat = () => {
 
   const fetchMessages = async () => {
     if (!user || !friendId) return;
+    
+    // Validate UUIDs to prevent injection
+    if (!isValidUUID(user.id) || !isValidUUID(friendId)) {
+      toast.error('Invalid user ID');
+      return;
+    }
 
     const { data, error } = await supabase
       .from('friend_messages')
