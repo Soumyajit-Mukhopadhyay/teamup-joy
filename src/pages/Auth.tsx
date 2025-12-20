@@ -140,7 +140,6 @@ const Auth = () => {
         }
         toast.success('Signed in successfully!');
       }
-      }
     } catch (error: any) {
       toast.error(error.message || 'An error occurred. Please try again.');
     } finally {
