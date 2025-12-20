@@ -14,7 +14,7 @@ interface Profile {
   user_id: string;
   username: string;
   userid: string;
-  email: string | null;
+  avatar_url: string | null;
 }
 
 interface Participation {
@@ -44,7 +44,7 @@ const UserProfile = () => {
 
     const { data: profileData, error } = await supabase
       .from('profiles')
-      .select('*')
+      .select('user_id, username, userid, avatar_url')
       .eq('userid', userid)
       .single();
 

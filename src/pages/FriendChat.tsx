@@ -19,6 +19,7 @@ interface Message {
   file_name: string | null;
   file_type: string | null;
   created_at: string;
+  signedFileUrl?: string | null;
 }
 
 interface Profile {
@@ -75,7 +76,19 @@ const FriendChat = () => {
     if (error) {
       toast.error('Failed to load messages');
     } else {
-      setMessages(data || []);
+      // Generate signed URLs for file attachments
+      const messagesWithSignedUrls = await Promise.all(
+        (data || []).map(async (msg) => {
+          if (msg.file_url) {
+            const { data: signedData } = await supabase.storage
+              .from('team-files')
+              .createSignedUrl(msg.file_url, 3600);
+            return { ...msg, signedFileUrl: signedData?.signedUrl || null };
+          }
+          return { ...msg, signedFileUrl: null };
+        })
+      );
+      setMessages(messagesWithSignedUrls);
     }
   };
 
@@ -91,12 +104,19 @@ const FriendChat = () => {
           schema: 'public',
           table: 'friend_messages',
         },
-        (payload) => {
+        async (payload) => {
           const newMsg = payload.new as Message;
           if (
             (newMsg.from_user_id === user.id && newMsg.to_user_id === friendId) ||
             (newMsg.from_user_id === friendId && newMsg.to_user_id === user.id)
           ) {
+            // Generate signed URL for file attachments
+            if (newMsg.file_url) {
+              const { data: signedData } = await supabase.storage
+                .from('team-files')
+                .createSignedUrl(newMsg.file_url, 3600);
+              newMsg.signedFileUrl = signedData?.signedUrl || null;
+            }
             setMessages((prev) => [...prev, newMsg]);
           }
         }
@@ -121,7 +141,7 @@ const FriendChat = () => {
 
       if (selectedFile) {
         const fileExt = selectedFile.name.split('.').pop();
-        const filePath = `${user.id}/${Date.now()}.${fileExt}`;
+        const filePath = `friends/${user.id}/${Date.now()}.${fileExt}`;
 
         const { error: uploadError } = await supabase.storage
           .from('team-files')
@@ -129,11 +149,8 @@ const FriendChat = () => {
 
         if (uploadError) throw uploadError;
 
-        const { data: { publicUrl } } = supabase.storage
-          .from('team-files')
-          .getPublicUrl(filePath);
-
-        fileUrl = publicUrl;
+        // Store the file path (not public URL) for signed URL generation later
+        fileUrl = filePath;
         fileName = selectedFile.name;
         fileType = selectedFile.type;
       }
@@ -175,16 +192,18 @@ const FriendChat = () => {
     const isOwn = message.from_user_id === user?.id;
     const isImage = message.file_type?.startsWith('image/');
 
+    const displayUrl = message.signedFileUrl || null;
+
     return (
       <div key={message.id} className={`flex ${isOwn ? 'justify-end' : 'justify-start'} mb-3`}>
         <div className={`max-w-[70%] ${isOwn ? 'order-2' : 'order-1'}`}>
           <div className={`rounded-2xl px-4 py-2 ${isOwn ? 'bg-primary text-primary-foreground' : 'bg-secondary'}`}>
-            {message.file_url && (
+            {message.file_url && displayUrl && (
               <div className="mb-2">
                 {isImage ? (
-                  <img src={message.file_url} alt={message.file_name || 'Image'} className="max-w-full rounded-lg" />
+                  <img src={displayUrl} alt={message.file_name || 'Image'} className="max-w-full rounded-lg" />
                 ) : (
-                  <a href={message.file_url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm underline">
+                  <a href={displayUrl} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 text-sm underline">
                     <FileText className="h-4 w-4" />
                     {message.file_name}
                   </a>
