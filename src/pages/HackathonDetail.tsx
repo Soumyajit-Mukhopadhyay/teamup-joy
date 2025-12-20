@@ -4,7 +4,7 @@ import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { format, parseISO } from 'date-fns';
-import { Calendar, MapPin, ExternalLink, CalendarPlus, Share2, Globe, Users, ArrowLeft, Tag, Building } from 'lucide-react';
+import { Calendar, MapPin, ExternalLink, CalendarPlus, Share2, Globe, Users, ArrowLeft, Tag, Building, Clock } from 'lucide-react';
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 
@@ -27,11 +27,17 @@ const HackathonDetail = () => {
     );
   }
 
+  const isLinkUpdatingSoon = hackathon.linkStatus === 'updating-soon' || !hackathon.url;
+
   const handleShare = async () => {
+    const shareUrl = isLinkUpdatingSoon 
+      ? window.location.href
+      : hackathon.url;
+    
     const shareData = {
       title: hackathon.name,
       text: hackathon.description,
-      url: hackathon.url,
+      url: shareUrl,
     };
     
     if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
@@ -39,7 +45,7 @@ const HackathonDetail = () => {
         await navigator.share(shareData);
       } catch (err) {}
     } else {
-      navigator.clipboard.writeText(hackathon.url);
+      navigator.clipboard.writeText(shareUrl);
       toast.success('Link copied to clipboard!');
     }
   };
@@ -49,8 +55,9 @@ const HackathonDetail = () => {
     const endDate = parseISO(hackathon.endDate);
     
     const formatGoogleDate = (date: Date) => format(date, "yyyyMMdd");
+    const websiteInfo = isLinkUpdatingSoon ? 'Registration link updating soon' : hackathon.url;
     
-    const googleCalendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(hackathon.name)}&dates=${formatGoogleDate(startDate)}/${formatGoogleDate(endDate)}&details=${encodeURIComponent(hackathon.description + '\n\nWebsite: ' + hackathon.url)}&location=${encodeURIComponent(hackathon.location)}`;
+    const googleCalendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(hackathon.name)}&dates=${formatGoogleDate(startDate)}/${formatGoogleDate(endDate)}&details=${encodeURIComponent(hackathon.description + '\n\nWebsite: ' + websiteInfo)}&location=${encodeURIComponent(hackathon.location)}`;
     
     window.open(googleCalendarUrl, '_blank');
     toast.success('Opening Google Calendar...');
@@ -63,6 +70,14 @@ const HackathonDetail = () => {
       return;
     }
     navigate(`/hackathon/${hackathon.id}/team`);
+  };
+
+  const handleVisitWebsite = () => {
+    if (isLinkUpdatingSoon) {
+      toast.info('Registration link will be updated soon!');
+      return;
+    }
+    window.open(hackathon.url, '_blank');
   };
 
   return (
@@ -78,7 +93,7 @@ const HackathonDetail = () => {
         <div className="glass-card p-8">
           <div className="flex items-start justify-between mb-4">
             <div className="flex items-center gap-2">
-              <span className="h-3 w-3 rounded-full bg-success animate-pulse" />
+              <span className={`h-3 w-3 rounded-full ${isLinkUpdatingSoon ? 'bg-warning' : 'bg-success'} animate-pulse`} />
               <span className="text-sm text-muted-foreground uppercase tracking-wider">
                 {hackathon.organizer} • {hackathon.region}
               </span>
@@ -91,6 +106,13 @@ const HackathonDetail = () => {
           </div>
 
           <h1 className="text-3xl font-bold mb-4 text-primary">{hackathon.name}</h1>
+
+          {isLinkUpdatingSoon && (
+            <div className="flex items-center gap-2 mb-4 p-3 bg-warning/10 border border-warning/30 rounded-lg">
+              <Clock className="h-5 w-5 text-warning" />
+              <span className="text-warning font-medium">Registration link will be updated soon</span>
+            </div>
+          )}
 
           <div className="flex flex-wrap gap-2 mb-6">
             {hackathon.tags.map((tag) => (
@@ -160,13 +182,24 @@ const HackathonDetail = () => {
           </div>
 
           <div className="flex flex-wrap gap-3">
-            <Button 
-              className="gap-2 btn-gradient"
-              onClick={() => window.open(hackathon.url, '_blank')}
-            >
-              <ExternalLink className="h-4 w-4" />
-              Visit Official Website
-            </Button>
+            {isLinkUpdatingSoon ? (
+              <Button 
+                variant="outline"
+                className="gap-2 border-warning/50 text-warning"
+                onClick={handleVisitWebsite}
+              >
+                <Clock className="h-4 w-4" />
+                Link Updating Soon
+              </Button>
+            ) : (
+              <Button 
+                className="gap-2 btn-gradient"
+                onClick={handleVisitWebsite}
+              >
+                <ExternalLink className="h-4 w-4" />
+                Visit Official Website
+              </Button>
+            )}
             
             <Button 
               variant="secondary"

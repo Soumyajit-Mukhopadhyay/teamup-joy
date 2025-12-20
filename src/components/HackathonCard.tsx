@@ -1,4 +1,4 @@
-import { Calendar, MapPin, ExternalLink, Share2, CalendarPlus, Globe } from 'lucide-react';
+import { Calendar, MapPin, ExternalLink, Share2, CalendarPlus, Globe, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Hackathon } from '@/data/hackathons';
@@ -16,12 +16,18 @@ const HackathonCard = ({ hackathon, delay = 0, onClick }: HackathonCardProps) =>
     return format(parseISO(dateStr), 'MMM d, yyyy');
   };
 
+  const isLinkUpdatingSoon = hackathon.linkStatus === 'updating-soon' || !hackathon.url;
+
   const handleShare = async (e: React.MouseEvent) => {
     e.stopPropagation();
+    const shareUrl = isLinkUpdatingSoon 
+      ? window.location.origin + '/hackathon/' + hackathon.id
+      : hackathon.url;
+    
     const shareData = {
       title: hackathon.name,
       text: hackathon.description,
-      url: hackathon.url,
+      url: shareUrl,
     };
     
     if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
@@ -31,8 +37,7 @@ const HackathonCard = ({ hackathon, delay = 0, onClick }: HackathonCardProps) =>
         // User cancelled or error
       }
     } else {
-      // Fallback to clipboard
-      navigator.clipboard.writeText(hackathon.url);
+      navigator.clipboard.writeText(shareUrl);
       toast.success('Link copied to clipboard!');
     }
   };
@@ -46,7 +51,8 @@ const HackathonCard = ({ hackathon, delay = 0, onClick }: HackathonCardProps) =>
       return format(date, "yyyyMMdd");
     };
     
-    const googleCalendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(hackathon.name)}&dates=${formatGoogleDate(startDate)}/${formatGoogleDate(endDate)}&details=${encodeURIComponent(hackathon.description + '\n\nWebsite: ' + hackathon.url)}&location=${encodeURIComponent(hackathon.location)}`;
+    const websiteInfo = isLinkUpdatingSoon ? 'Link updating soon' : hackathon.url;
+    const googleCalendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(hackathon.name)}&dates=${formatGoogleDate(startDate)}/${formatGoogleDate(endDate)}&details=${encodeURIComponent(hackathon.description + '\n\nWebsite: ' + websiteInfo)}&location=${encodeURIComponent(hackathon.location)}`;
     
     window.open(googleCalendarUrl, '_blank');
     toast.success('Opening Google Calendar...');
@@ -54,6 +60,10 @@ const HackathonCard = ({ hackathon, delay = 0, onClick }: HackathonCardProps) =>
 
   const handleVisit = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (isLinkUpdatingSoon) {
+      toast.info('Registration link will be updated soon!');
+      return;
+    }
     window.open(hackathon.url, '_blank');
   };
 
@@ -65,7 +75,7 @@ const HackathonCard = ({ hackathon, delay = 0, onClick }: HackathonCardProps) =>
     >
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center gap-2">
-          <span className="h-2 w-2 rounded-full bg-success animate-pulse" />
+          <span className={`h-2 w-2 rounded-full ${isLinkUpdatingSoon ? 'bg-warning' : 'bg-success'} animate-pulse`} />
           <span className="text-xs text-muted-foreground uppercase tracking-wider">
             {hackathon.organizer} • {hackathon.region}
           </span>
@@ -105,14 +115,25 @@ const HackathonCard = ({ hackathon, delay = 0, onClick }: HackathonCardProps) =>
       </p>
 
       <div className="flex items-center gap-2">
-        <Button 
-          variant="secondary" 
-          className="flex-1 gap-2"
-          onClick={handleVisit}
-        >
-          <ExternalLink className="h-4 w-4" />
-          Visit
-        </Button>
+        {isLinkUpdatingSoon ? (
+          <Button 
+            variant="outline" 
+            className="flex-1 gap-2 text-warning border-warning/50"
+            onClick={handleVisit}
+          >
+            <Clock className="h-4 w-4" />
+            Link Updating Soon
+          </Button>
+        ) : (
+          <Button 
+            variant="secondary" 
+            className="flex-1 gap-2"
+            onClick={handleVisit}
+          >
+            <ExternalLink className="h-4 w-4" />
+            Visit
+          </Button>
+        )}
         <Button 
           variant="outline" 
           size="icon"

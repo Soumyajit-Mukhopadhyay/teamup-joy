@@ -1,5 +1,5 @@
 import { useState, useMemo } from 'react';
-import { ChevronLeft, ChevronRight, CalendarDays, Calendar, MapPin, ExternalLink, CalendarPlus, Share2, Globe } from 'lucide-react';
+import { ChevronLeft, ChevronRight, CalendarDays, Calendar, MapPin, ExternalLink, CalendarPlus, Share2, Globe, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Hackathon } from '@/data/hackathons';
@@ -50,11 +50,19 @@ const HackathonCalendar = ({ hackathons }: HackathonCalendarProps) => {
 
   const today = new Date();
 
+  const isLinkUpdatingSoon = (hackathon: Hackathon) => 
+    hackathon.linkStatus === 'updating-soon' || !hackathon.url;
+
   const handleShare = async (hackathon: Hackathon) => {
+    const updatingSoon = isLinkUpdatingSoon(hackathon);
+    const shareUrl = updatingSoon 
+      ? window.location.origin + '/hackathon/' + hackathon.id
+      : hackathon.url;
+    
     const shareData = {
       title: hackathon.name,
       text: hackathon.description,
-      url: hackathon.url,
+      url: shareUrl,
     };
     
     if (navigator.share && navigator.canShare && navigator.canShare(shareData)) {
@@ -62,7 +70,7 @@ const HackathonCalendar = ({ hackathons }: HackathonCalendarProps) => {
         await navigator.share(shareData);
       } catch (err) {}
     } else {
-      navigator.clipboard.writeText(hackathon.url);
+      navigator.clipboard.writeText(shareUrl);
       toast.success('Link copied to clipboard!');
     }
   };
@@ -70,13 +78,23 @@ const HackathonCalendar = ({ hackathons }: HackathonCalendarProps) => {
   const handleAddToCalendar = (hackathon: Hackathon) => {
     const startDate = parseISO(hackathon.startDate);
     const endDate = parseISO(hackathon.endDate);
+    const updatingSoon = isLinkUpdatingSoon(hackathon);
     
     const formatGoogleDate = (date: Date) => format(date, "yyyyMMdd");
+    const websiteInfo = updatingSoon ? 'Registration link updating soon' : hackathon.url;
     
-    const googleCalendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(hackathon.name)}&dates=${formatGoogleDate(startDate)}/${formatGoogleDate(endDate)}&details=${encodeURIComponent(hackathon.description + '\n\nWebsite: ' + hackathon.url)}&location=${encodeURIComponent(hackathon.location)}`;
+    const googleCalendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(hackathon.name)}&dates=${formatGoogleDate(startDate)}/${formatGoogleDate(endDate)}&details=${encodeURIComponent(hackathon.description + '\n\nWebsite: ' + websiteInfo)}&location=${encodeURIComponent(hackathon.location)}`;
     
     window.open(googleCalendarUrl, '_blank');
     toast.success('Opening Google Calendar...');
+  };
+
+  const handleVisit = (hackathon: Hackathon) => {
+    if (isLinkUpdatingSoon(hackathon)) {
+      toast.info('Registration link will be updated soon!');
+      return;
+    }
+    window.open(hackathon.url, '_blank');
   };
 
   return (
@@ -176,73 +194,87 @@ const HackathonCalendar = ({ hackathons }: HackathonCalendarProps) => {
 
         {selectedDayHackathons.length > 0 ? (
           <div className="space-y-4">
-            {selectedDayHackathons.map(h => (
-              <div key={h.id} className="glass-card p-5">
-                <div className="flex items-start justify-between mb-2">
-                  <div className="flex items-center gap-2">
-                    <span className="h-2 w-2 rounded-full bg-success" />
-                    <span className="text-xs text-muted-foreground uppercase tracking-wider">
-                      {h.organizer} • {h.region}
-                    </span>
+            {selectedDayHackathons.map(h => {
+              const updatingSoon = isLinkUpdatingSoon(h);
+              return (
+                <div key={h.id} className="glass-card p-5">
+                  <div className="flex items-start justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <span className={`h-2 w-2 rounded-full ${updatingSoon ? 'bg-warning' : 'bg-success'}`} />
+                      <span className="text-xs text-muted-foreground uppercase tracking-wider">
+                        {h.organizer} • {h.region}
+                      </span>
+                    </div>
+                    {h.isGlobal ? (
+                      <Globe className="h-5 w-5 text-muted-foreground" />
+                    ) : (
+                      <span className="text-xs font-bold bg-muted px-2 py-1 rounded">IN</span>
+                    )}
                   </div>
-                  {h.isGlobal ? (
-                    <Globe className="h-5 w-5 text-muted-foreground" />
-                  ) : (
-                    <span className="text-xs font-bold bg-muted px-2 py-1 rounded">IN</span>
-                  )}
-                </div>
 
-                <h3 className="text-lg font-semibold text-primary mb-3">{h.name}</h3>
-                
-                <div className="flex flex-wrap gap-2 mb-3">
-                  {h.tags.slice(0, 4).map((tag) => (
-                    <Badge key={tag} variant="secondary" className="badge-tag">
-                      {tag}
-                    </Badge>
-                  ))}
-                </div>
-
-                <div className="space-y-2 mb-3 text-sm text-muted-foreground">
-                  <div className="flex items-center gap-2">
-                    <Calendar className="h-4 w-4 text-primary" />
-                    <span>{format(parseISO(h.startDate), 'MMM d, yyyy')} - {format(parseISO(h.endDate), 'MMM d, yyyy')}</span>
+                  <h3 className="text-lg font-semibold text-primary mb-3">{h.name}</h3>
+                  
+                  <div className="flex flex-wrap gap-2 mb-3">
+                    {h.tags.slice(0, 4).map((tag) => (
+                      <Badge key={tag} variant="secondary" className="badge-tag">
+                        {tag}
+                      </Badge>
+                    ))}
                   </div>
+
+                  <div className="space-y-2 mb-3 text-sm text-muted-foreground">
+                    <div className="flex items-center gap-2">
+                      <Calendar className="h-4 w-4 text-primary" />
+                      <span>{format(parseISO(h.startDate), 'MMM d, yyyy')} - {format(parseISO(h.endDate), 'MMM d, yyyy')}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <MapPin className="h-4 w-4 text-primary" />
+                      <span>{h.location}</span>
+                    </div>
+                  </div>
+
+                  <p className="text-sm text-muted-foreground mb-4">{h.description}</p>
+
                   <div className="flex items-center gap-2">
-                    <MapPin className="h-4 w-4 text-primary" />
-                    <span>{h.location}</span>
+                    {updatingSoon ? (
+                      <Button 
+                        variant="outline" 
+                        className="flex-1 gap-2 border-warning/50 text-warning"
+                        onClick={() => handleVisit(h)}
+                      >
+                        <Clock className="h-4 w-4" />
+                        Link Updating Soon
+                      </Button>
+                    ) : (
+                      <Button 
+                        variant="secondary" 
+                        className="flex-1 gap-2"
+                        onClick={() => handleVisit(h)}
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        Visit
+                      </Button>
+                    )}
+                    <Button 
+                      variant="outline" 
+                      size="icon"
+                      onClick={() => handleAddToCalendar(h)}
+                      title="Add to Google Calendar"
+                    >
+                      <CalendarPlus className="h-4 w-4" />
+                    </Button>
+                    <Button 
+                      variant="outline" 
+                      size="icon"
+                      onClick={() => handleShare(h)}
+                      title="Share"
+                    >
+                      <Share2 className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
-
-                <p className="text-sm text-muted-foreground mb-4">{h.description}</p>
-
-                <div className="flex items-center gap-2">
-                  <Button 
-                    variant="secondary" 
-                    className="flex-1 gap-2"
-                    onClick={() => window.open(h.url, '_blank')}
-                  >
-                    <ExternalLink className="h-4 w-4" />
-                    Visit
-                  </Button>
-                  <Button 
-                    variant="outline" 
-                    size="icon"
-                    onClick={() => handleAddToCalendar(h)}
-                    title="Add to Google Calendar"
-                  >
-                    <CalendarPlus className="h-4 w-4" />
-                  </Button>
-                  <Button 
-                    variant="outline" 
-                    size="icon"
-                    onClick={() => handleShare(h)}
-                    title="Share"
-                  >
-                    <Share2 className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         ) : (
           <div className="glass-card p-8 flex items-center justify-center min-h-[200px]">
