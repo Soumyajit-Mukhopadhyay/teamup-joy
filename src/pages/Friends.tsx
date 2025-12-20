@@ -122,14 +122,24 @@ const Friends = () => {
     setLoading(false);
   };
 
+  // Sanitize ILIKE query to prevent wildcard injection
+  const sanitizeILikeQuery = (query: string): string => {
+    return query.replace(/[%_\\]/g, '\\$&');
+  };
+
   const searchUsers = async () => {
     if (searchQuery.length < 2) return;
+    if (searchQuery.length > 50) {
+      toast.error('Search query too long');
+      return;
+    }
     setSearching(true);
 
+    const sanitized = sanitizeILikeQuery(searchQuery);
     const { data, error } = await supabase
       .from('profiles')
       .select('id, user_id, username, userid')
-      .or(`userid.ilike.%${searchQuery}%,username.ilike.%${searchQuery}%`)
+      .or(`userid.ilike.%${sanitized}%,username.ilike.%${sanitized}%`)
       .neq('user_id', user?.id)
       .limit(10);
 
