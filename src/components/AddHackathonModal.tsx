@@ -19,13 +19,17 @@ import {
 } from '@/components/ui/select';
 import { Plus } from 'lucide-react';
 import { toast } from 'sonner';
+import { supabase } from '@/integrations/supabase/client';
+import { useAuth } from '@/contexts/AuthContext';
 
 interface AddHackathonModalProps {
   onAdd?: (hackathon: any) => void;
 }
 
 const AddHackathonModal = ({ onAdd }: AddHackathonModalProps) => {
+  const { user } = useAuth();
   const [open, setOpen] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const [formData, setFormData] = useState({
     name: '',
     description: '',
@@ -42,7 +46,7 @@ const AddHackathonModal = ({ onAdd }: AddHackathonModalProps) => {
     setFormData(prev => ({ ...prev, [field]: value }));
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
     if (!formData.name || !formData.startDate || !formData.endDate) {
@@ -50,34 +54,49 @@ const AddHackathonModal = ({ onAdd }: AddHackathonModalProps) => {
       return;
     }
 
-    const newHackathon = {
-      id: formData.name.toLowerCase().replace(/\s+/g, '-'),
-      name: formData.name,
-      description: formData.description,
-      startDate: formData.startDate,
-      endDate: formData.endDate,
-      region: formData.region as 'India' | 'Global',
-      location: formData.location || 'Online',
-      url: formData.url || '#',
-      organizer: formData.platform,
-      tags: formData.tags.split(',').map(t => t.trim()).filter(Boolean),
-      isGlobal: formData.region === 'Global',
-    };
+    if (!user) {
+      toast.error('Please sign in to submit a hackathon');
+      return;
+    }
 
-    onAdd?.(newHackathon);
-    toast.success('Hackathon added successfully!');
-    setOpen(false);
-    setFormData({
-      name: '',
-      description: '',
-      startDate: '',
-      endDate: '',
-      region: 'Global',
-      platform: 'Official Site',
-      location: '',
-      url: '',
-      tags: '',
-    });
+    setSubmitting(true);
+
+    try {
+      const { error } = await supabase.from('hackathons').insert({
+        name: formData.name,
+        description: formData.description || null,
+        start_date: new Date(formData.startDate).toISOString(),
+        end_date: new Date(formData.endDate).toISOString(),
+        region: formData.region,
+        location: formData.location || 'Online',
+        url: formData.url || null,
+        organizer: formData.platform,
+        tags: formData.tags.split(',').map(t => t.trim()).filter(Boolean),
+        is_global: formData.region === 'Global',
+        status: 'pending',
+        submitted_by: user.id,
+      });
+
+      if (error) throw error;
+
+      toast.success('Hackathon submitted for admin approval!');
+      setOpen(false);
+      setFormData({
+        name: '',
+        description: '',
+        startDate: '',
+        endDate: '',
+        region: 'Global',
+        platform: 'Official Site',
+        location: '',
+        url: '',
+        tags: '',
+      });
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to submit hackathon');
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -202,9 +221,12 @@ const AddHackathonModal = ({ onAdd }: AddHackathonModalProps) => {
             />
           </div>
 
-          <Button type="submit" className="w-full btn-gradient">
-            Add Hackathon
+          <Button type="submit" className="w-full btn-gradient" disabled={submitting}>
+            {submitting ? 'Submitting...' : 'Submit for Approval'}
           </Button>
+          <p className="text-xs text-muted-foreground text-center">
+            Your submission will be reviewed by an admin before appearing publicly.
+          </p>
         </form>
       </DialogContent>
     </Dialog>

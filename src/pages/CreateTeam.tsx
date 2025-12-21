@@ -21,7 +21,7 @@ interface SearchResult {
 const CreateTeam = () => {
   const { hackathonId } = useParams();
   const navigate = useNavigate();
-  const { user, profile } = useAuth();
+  const { user, profile, loading: authLoading } = useAuth();
 
   const [teamName, setTeamName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -33,10 +33,12 @@ const CreateTeam = () => {
   const hackathon = hackathons.find(h => h.id === hackathonId);
 
   useEffect(() => {
+    if (authLoading) return;
+    
     if (!user) {
       navigate('/auth');
     }
-  }, [user, navigate]);
+  }, [user, authLoading, navigate]);
 
   // Sanitize ILIKE query to prevent wildcard injection
   const sanitizeILikeQuery = (query: string): string => {
@@ -117,13 +119,14 @@ const CreateTeam = () => {
 
       if (teamError) throw teamError;
 
-      // Add creator as team member
+      // Add creator as team member (leader)
       const { error: memberError } = await supabase
         .from('team_members')
         .insert({
           team_id: team.id,
           user_id: user.id,
           role: 'leader',
+          is_leader: true,
         });
 
       if (memberError) throw memberError;

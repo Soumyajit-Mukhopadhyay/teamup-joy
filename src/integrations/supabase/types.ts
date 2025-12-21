@@ -14,6 +14,39 @@ export type Database = {
   }
   public: {
     Tables: {
+      admin_notifications: {
+        Row: {
+          created_at: string
+          id: string
+          is_read: boolean
+          message: string | null
+          reference_id: string | null
+          reference_type: string | null
+          title: string
+          type: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_read?: boolean
+          message?: string | null
+          reference_id?: string | null
+          reference_type?: string | null
+          title: string
+          type: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_read?: boolean
+          message?: string | null
+          reference_id?: string | null
+          reference_type?: string | null
+          title?: string
+          type?: string
+        }
+        Relationships: []
+      }
       friend_messages: {
         Row: {
           content: string | null
@@ -119,6 +152,66 @@ export type Database = {
         }
         Relationships: []
       }
+      hackathons: {
+        Row: {
+          created_at: string
+          description: string | null
+          end_date: string
+          id: string
+          is_global: boolean
+          location: string
+          name: string
+          organizer: string | null
+          region: string
+          reviewed_at: string | null
+          reviewed_by: string | null
+          start_date: string
+          status: string
+          submitted_by: string | null
+          tags: string[] | null
+          updated_at: string
+          url: string | null
+        }
+        Insert: {
+          created_at?: string
+          description?: string | null
+          end_date: string
+          id?: string
+          is_global?: boolean
+          location?: string
+          name: string
+          organizer?: string | null
+          region?: string
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          start_date: string
+          status?: string
+          submitted_by?: string | null
+          tags?: string[] | null
+          updated_at?: string
+          url?: string | null
+        }
+        Update: {
+          created_at?: string
+          description?: string | null
+          end_date?: string
+          id?: string
+          is_global?: boolean
+          location?: string
+          name?: string
+          organizer?: string | null
+          region?: string
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          start_date?: string
+          status?: string
+          submitted_by?: string | null
+          tags?: string[] | null
+          updated_at?: string
+          url?: string | null
+        }
+        Relationships: []
+      }
       messages: {
         Row: {
           content: string | null
@@ -193,6 +286,7 @@ export type Database = {
       team_members: {
         Row: {
           id: string
+          is_leader: boolean
           joined_at: string
           role: string
           team_id: string
@@ -200,6 +294,7 @@ export type Database = {
         }
         Insert: {
           id?: string
+          is_leader?: boolean
           joined_at?: string
           role?: string
           team_id: string
@@ -207,6 +302,7 @@ export type Database = {
         }
         Update: {
           id?: string
+          is_leader?: boolean
           joined_at?: string
           role?: string
           team_id?: string
@@ -287,15 +383,46 @@ export type Database = {
         }
         Relationships: []
       }
+      user_roles: {
+        Row: {
+          created_at: string
+          id: string
+          role: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          role?: Database["public"]["Enums"]["app_role"]
+          user_id?: string
+        }
+        Relationships: []
+      }
     }
     Views: {
       [_ in never]: never
     }
     Functions: {
-      [_ in never]: never
+      has_role: {
+        Args: {
+          _role: Database["public"]["Enums"]["app_role"]
+          _user_id: string
+        }
+        Returns: boolean
+      }
+      is_team_leader: {
+        Args: { _team_id: string; _user_id: string }
+        Returns: boolean
+      }
     }
     Enums: {
-      [_ in never]: never
+      app_role: "admin" | "moderator" | "user"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -422,6 +549,8 @@ export type CompositeTypes<
 
 export const Constants = {
   public: {
-    Enums: {},
+    Enums: {
+      app_role: ["admin", "moderator", "user"],
+    },
   },
 } as const

@@ -29,17 +29,19 @@ interface TeamRequest {
 
 const Requests = () => {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [requests, setRequests] = useState<TeamRequest[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (authLoading) return;
+    
     if (!user) {
       navigate('/auth');
       return;
     }
     fetchRequests();
-  }, [user, navigate]);
+  }, [user, authLoading]);
 
   const fetchRequests = async () => {
     if (!user) return;

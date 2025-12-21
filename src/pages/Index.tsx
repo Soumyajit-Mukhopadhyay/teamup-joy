@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import HeroSection from '@/components/HeroSection';
@@ -6,7 +6,7 @@ import FilterBar from '@/components/FilterBar';
 import HackathonCard from '@/components/HackathonCard';
 import HackathonCalendar from '@/components/HackathonCalendar';
 import { hackathons as initialHackathons, Hackathon } from '@/data/hackathons';
-import { toast } from 'sonner';
+import { supabase } from '@/integrations/supabase/client';
 
 const Index = () => {
   const navigate = useNavigate();
@@ -14,11 +14,41 @@ const Index = () => {
   const [search, setSearch] = useState('');
   const [selectedRegion, setSelectedRegion] = useState('All Regions');
   const [selectedTopic, setSelectedTopic] = useState('All Topics');
-  const [customHackathons, setCustomHackathons] = useState<Hackathon[]>([]);
+  const [dbHackathons, setDbHackathons] = useState<Hackathon[]>([]);
+
+  // Fetch approved hackathons from database
+  useEffect(() => {
+    const fetchApprovedHackathons = async () => {
+      const { data, error } = await supabase
+        .from('hackathons')
+        .select('*')
+        .eq('status', 'approved')
+        .order('start_date', { ascending: true });
+
+      if (!error && data) {
+        const formatted: Hackathon[] = data.map(h => ({
+          id: h.id,
+          name: h.name,
+          description: h.description || '',
+          startDate: h.start_date,
+          endDate: h.end_date,
+          region: h.region as 'India' | 'Global',
+          location: h.location,
+          url: h.url || '#',
+          organizer: h.organizer || 'Community',
+          tags: h.tags || [],
+          isGlobal: h.is_global,
+        }));
+        setDbHackathons(formatted);
+      }
+    };
+
+    fetchApprovedHackathons();
+  }, []);
 
   const allHackathons = useMemo(() => {
-    return [...initialHackathons, ...customHackathons];
-  }, [customHackathons]);
+    return [...initialHackathons, ...dbHackathons];
+  }, [dbHackathons]);
 
   const filteredHackathons = useMemo(() => {
     return allHackathons.filter(h => {
@@ -29,11 +59,6 @@ const Index = () => {
       return matchesSearch && matchesRegion && matchesTopic;
     });
   }, [allHackathons, search, selectedRegion, selectedTopic]);
-
-  const handleAddHackathon = (hackathon: Hackathon) => {
-    setCustomHackathons(prev => [...prev, hackathon]);
-    toast.success('Hackathon added!');
-  };
 
   return (
     <div className="min-h-screen bg-background">
@@ -50,7 +75,6 @@ const Index = () => {
           setSelectedRegion={setSelectedRegion}
           selectedTopic={selectedTopic}
           setSelectedTopic={setSelectedTopic}
-          onAddHackathon={handleAddHackathon}
         />
 
         {view === 'grid' ? (
