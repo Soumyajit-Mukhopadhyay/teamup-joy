@@ -15,6 +15,8 @@ import Profile from "./pages/Profile";
 import Friends from "./pages/Friends";
 import FriendChat from "./pages/FriendChat";
 import UserProfile from "./pages/UserProfile";
+import AdminPanel from "./pages/AdminPanel";
+import TeamManage from "./pages/TeamManage";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -32,12 +34,14 @@ const App = () => (
             <Route path="/hackathon/:id" element={<HackathonDetail />} />
             <Route path="/hackathon/:hackathonId/team" element={<CreateTeam />} />
             <Route path="/teams" element={<Teams />} />
+            <Route path="/team/:teamId/manage" element={<TeamManage />} />
             <Route path="/requests" element={<Requests />} />
             <Route path="/team/:teamId/chat" element={<TeamChat />} />
             <Route path="/profile" element={<Profile />} />
             <Route path="/friends" element={<Friends />} />
             <Route path="/chat/:friendId" element={<FriendChat />} />
             <Route path="/user/:userid" element={<UserProfile />} />
+            <Route path="/admin" element={<AdminPanel />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
         </BrowserRouter>

@@ -5,9 +5,10 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Users, MessageCircle, Calendar } from 'lucide-react';
+import { Users, MessageCircle, Calendar, Settings } from 'lucide-react';
 import { hackathons } from '@/data/hackathons';
 import { format } from 'date-fns';
+import { Badge } from '@/components/ui/badge';
 
 interface Team {
   id: string;
@@ -16,21 +17,24 @@ interface Team {
   created_by: string;
   created_at: string;
   member_count?: number;
+  is_leader?: boolean;
 }
 
 const Teams = () => {
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    if (authLoading) return;
+    
     if (!user) {
       navigate('/auth');
       return;
     }
     fetchTeams();
-  }, [user, navigate]);
+  }, [user, authLoading]);
 
   const fetchTeams = async () => {
     if (!user) return;
@@ -38,7 +42,7 @@ const Teams = () => {
     // Get teams where user is a member
     const { data: memberData, error: memberError } = await supabase
       .from('team_members')
-      .select('team_id')
+      .select('team_id, role, is_leader')
       .eq('user_id', user.id);
 
     if (memberError) {
@@ -75,8 +79,11 @@ const Teams = () => {
           .from('team_members')
           .select('*', { count: 'exact', head: true })
           .eq('team_id', team.id);
+
+        const memberInfo = memberData.find(m => m.team_id === team.id);
+        const isLeader = memberInfo?.role === 'leader' || memberInfo?.is_leader || team.created_by === user.id;
         
-        return { ...team, member_count: count || 0 };
+        return { ...team, member_count: count || 0, is_leader: isLeader };
       })
     );
 
@@ -88,6 +95,17 @@ const Teams = () => {
     const hackathon = hackathons.find(h => h.id === hackathonId);
     return hackathon?.name || 'Unknown Hackathon';
   };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-background">
+        <Header />
+        <div className="container py-16 text-center text-muted-foreground">
+          Loading...
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background">
@@ -127,7 +145,12 @@ const Teams = () => {
               <div key={team.id} className="glass-card p-5 card-hover animate-fade-in">
                 <div className="flex items-start justify-between mb-4">
                   <div>
-                    <h3 className="text-lg font-semibold">{team.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg font-semibold">{team.name}</h3>
+                      {team.is_leader && (
+                        <Badge variant="outline" className="text-xs">Leader</Badge>
+                      )}
+                    </div>
                     <p className="text-sm text-muted-foreground">
                       {getHackathonName(team.hackathon_id)}
                     </p>
@@ -150,6 +173,13 @@ const Teams = () => {
                       Team Chat
                     </Button>
                   </Link>
+                  {team.is_leader && (
+                    <Link to={`/team/${team.id}/manage`}>
+                      <Button variant="outline" size="icon">
+                        <Settings className="h-4 w-4" />
+                      </Button>
+                    </Link>
+                  )}
                 </div>
               </div>
             ))}

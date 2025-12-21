@@ -20,7 +20,6 @@ interface FilterBarProps {
   setSelectedRegion: (region: string) => void;
   selectedTopic: string;
   setSelectedTopic: (topic: string) => void;
-  onAddHackathon?: (hackathon: any) => void;
 }
 
 const FilterBar = ({
@@ -32,7 +31,6 @@ const FilterBar = ({
   setSelectedRegion,
   selectedTopic,
   setSelectedTopic,
-  onAddHackathon,
 }: FilterBarProps) => {
   return (
     <div className="flex flex-col gap-4 py-6 animate-fade-in">
@@ -60,7 +58,7 @@ const FilterBar = ({
         </div>
 
         {/* Add Hackathon Button */}
-        <AddHackathonModal onAdd={onAddHackathon} />
+        <AddHackathonModal />
       </div>
 
       {/* Filters */}
