@@ -133,6 +133,12 @@ const HackerBuddy = () => {
           label: isCalendar ? 'Open calendar' : 'Open link',
           url: action.url,
         });
+        // Also offer copy for any generated link (especially calendar URLs)
+        actions.push({
+          type: 'copy_to_clipboard',
+          label: isCalendar ? 'Copy calendar link' : 'Copy link',
+          text: action.url,
+        });
       }
 
       if (action.type === 'copy_to_clipboard' && typeof action.text === 'string') {
@@ -140,9 +146,9 @@ const HackerBuddy = () => {
       }
 
       if (action.type === 'navigate' && typeof action.path === 'string') {
-        actions.push({ 
-          type: 'navigate', 
-          label: 'Go to page', 
+        actions.push({
+          type: 'navigate',
+          label: 'Go to page',
           path: action.path,
           url: action.url || action.path,
         });
@@ -471,7 +477,8 @@ const HackerBuddy = () => {
             })),
             pendingConfirmation: false,
             currentHackathonId,
-            stream: true,
+            // Reliability > token streaming: ensure we always get toolResults back
+            stream: false,
           }),
         }
       );
@@ -710,13 +717,11 @@ const HackerBuddy = () => {
                     className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
                     <div
-                      className={`max-w-[80%] rounded-lg p-3 overflow-visible ${
+                      className={`max-w-[80%] rounded-lg p-3 overflow-hidden ${
                         message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
                       }`}
                     >
-                      <p className="text-sm whitespace-pre-wrap break-all">
-                        {message.content}
-                      </p>
+                      <p className="text-sm whitespace-pre-wrap break-words">{message.content}</p>
 
                       {message.role === 'assistant' && message.actions?.length ? (
                         <div className="mt-3 p-2 bg-background/50 rounded-lg border border-border/50">
@@ -770,11 +775,6 @@ const HackerBuddy = () => {
                               return null;
                             })}
                           </div>
-                          {message.actions.some((a) => a.type === 'copy_to_clipboard') && (
-                            <p className="mt-2 text-xs text-muted-foreground break-all">
-                              {(message.actions.find((a) => a.type === 'copy_to_clipboard') as { text: string } | undefined)?.text}
-                            </p>
-                          )}
                         </div>
                       ) : null}
 
