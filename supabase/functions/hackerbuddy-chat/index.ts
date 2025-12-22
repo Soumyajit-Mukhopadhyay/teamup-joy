@@ -306,6 +306,70 @@ const tools = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "get_current_datetime",
+      description: "Get the current date and time. Use this when user asks about the current time or date.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_weather",
+      description: "Get current weather information for a location",
+      parameters: {
+        type: "object",
+        properties: {
+          location: { type: "string", description: "City name or location (e.g., 'New York', 'London', 'Tokyo')" },
+        },
+        required: ["location"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_hackathon_calendar_link",
+      description: "Generate a Google Calendar link to add a hackathon to the user's calendar",
+      parameters: {
+        type: "object",
+        properties: {
+          hackathon_query: { type: "string", description: "Hackathon name/slug/id (partial ok)" },
+        },
+        required: ["hackathon_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_hackathon_share_link",
+      description: "Generate a shareable link for a hackathon",
+      parameters: {
+        type: "object",
+        properties: {
+          hackathon_query: { type: "string", description: "Hackathon name/slug/id (partial ok)" },
+        },
+        required: ["hackathon_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "visit_hackathon_website",
+      description: "Get the official website URL for a hackathon. If no URL is available, inform the user it's updating soon.",
+      parameters: {
+        type: "object",
+        properties: {
+          hackathon_query: { type: "string", description: "Hackathon name/slug/id (partial ok)" },
+        },
+        required: ["hackathon_query"],
+      },
+    },
+  },
 ];
 
 // Guardrails - actions that require confirmation
@@ -737,17 +801,35 @@ async function executeToolCall(
 
       if (existing) return { result: { error: "You are already friends with this user" } };
 
-      // Check for pending request
-      const { data: pendingReq } = await supabase
+      // Check for ANY existing request (any status) - not just pending
+      const { data: existingReq } = await supabase
         .from("friend_requests")
-        .select("id")
+        .select("id, status")
         .eq("from_user_id", userId)
         .eq("to_user_id", target.user_id)
-        .eq("status", "pending")
         .maybeSingle();
 
-      if (pendingReq) return { result: { error: "Friend request already pending" } };
+      if (existingReq) {
+        if (existingReq.status === "pending") {
+          return { result: { error: "Friend request already pending" } };
+        }
+        // Update existing row back to pending instead of inserting (fixes duplicate key error)
+        const { error } = await supabase
+          .from("friend_requests")
+          .update({ status: "pending", updated_at: new Date().toISOString() })
+          .eq("id", existingReq.id);
 
+        if (error) return { result: { error: error.message } };
+        return {
+          result: {
+            success: true,
+            message: `Friend request sent to ${target.username} (@${target.userid})`,
+            action_type: "send_friend_request",
+          },
+        };
+      }
+
+      // No existing row, insert new
       const { error } = await supabase
         .from("friend_requests")
         .insert({ from_user_id: userId, to_user_id: target.user_id });
@@ -757,6 +839,7 @@ async function executeToolCall(
         result: {
           success: true,
           message: `Friend request sent to ${target.username} (@${target.userid})`,
+          action_type: "send_friend_request",
         },
       };
     }
@@ -1422,6 +1505,164 @@ async function executeToolCall(
       };
     }
 
+    case "get_current_datetime": {
+      const now = new Date();
+      const formatted = now.toLocaleString("en-US", {
+        weekday: "long",
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "numeric",
+        minute: "2-digit",
+        second: "2-digit",
+        timeZoneName: "short",
+      });
+      const isoTime = now.toISOString();
+      return {
+        result: {
+          formatted,
+          iso: isoTime,
+          timestamp: now.getTime(),
+          message: `The current date and time is ${formatted}`,
+        },
+      };
+    }
+
+    case "get_weather": {
+      const perplexityKey = Deno.env.get("PERPLEXITY_API_KEY");
+      if (!perplexityKey) {
+        return { result: { error: "Weather service is not configured" } };
+      }
+      try {
+        const response = await fetch("https://api.perplexity.ai/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${perplexityKey}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "sonar",
+            messages: [
+              {
+                role: "system",
+                content: "You are a weather assistant. Provide current weather conditions for the requested location. Include temperature (in both Celsius and Fahrenheit), conditions, humidity, and any relevant weather alerts. Be concise.",
+              },
+              { role: "user", content: `What is the current weather in ${args.location}?` },
+            ],
+          }),
+        });
+        const data = await response.json();
+        return {
+          result: {
+            weather: data.choices?.[0]?.message?.content || "Unable to get weather information",
+            location: args.location,
+            citations: data.citations || [],
+          },
+        };
+      } catch (_e) {
+        return { result: { error: "Weather lookup failed" } };
+      }
+    }
+
+    case "get_hackathon_calendar_link": {
+      const res = await resolveHackathon(args.hackathon_query);
+      if (res.type === "error") return { result: { error: res.error } };
+      if (res.type === "none") return { result: { error: "Hackathon not found" } };
+      if (res.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple hackathons. Which one do you want to add to calendar?",
+            matches: res.matches.map((h: any) => ({ name: h.name, slug: h.slug })),
+          },
+        };
+      }
+
+      const h = res.match;
+      const startDate = new Date(h.start_date);
+      const endDate = new Date(h.end_date);
+      
+      const formatGoogleDate = (date: Date) => {
+        return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
+      };
+
+      const calendarUrl = `https://calendar.google.com/calendar/render?action=TEMPLATE&text=${encodeURIComponent(h.name)}&dates=${formatGoogleDate(startDate).substring(0, 8)}/${formatGoogleDate(endDate).substring(0, 8)}&details=${encodeURIComponent((h.description || "Hackathon event") + (h.url ? "\n\nWebsite: " + h.url : ""))}&location=${encodeURIComponent(h.location || "Online")}`;
+
+      return {
+        result: {
+          hackathon: h.name,
+          calendar_link: calendarUrl,
+          message: `Here's the Google Calendar link for "${h.name}": ${calendarUrl}`,
+        },
+      };
+    }
+
+    case "get_hackathon_share_link": {
+      const res = await resolveHackathon(args.hackathon_query);
+      if (res.type === "error") return { result: { error: res.error } };
+      if (res.type === "none") return { result: { error: "Hackathon not found" } };
+      if (res.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple hackathons. Which one do you want to share?",
+            matches: res.matches.map((h: any) => ({ name: h.name, slug: h.slug })),
+          },
+        };
+      }
+
+      const h = res.match;
+      // Generate the app's hackathon page URL
+      const shareUrl = `https://hackerbuddy.lovable.app/hackathon/${h.slug}`;
+
+      return {
+        result: {
+          hackathon: h.name,
+          share_link: shareUrl,
+          official_url: h.url || null,
+          message: h.url 
+            ? `Share link for "${h.name}": ${shareUrl}\nOfficial website: ${h.url}`
+            : `Share link for "${h.name}": ${shareUrl}`,
+        },
+      };
+    }
+
+    case "visit_hackathon_website": {
+      const res = await resolveHackathon(args.hackathon_query);
+      if (res.type === "error") return { result: { error: res.error } };
+      if (res.type === "none") return { result: { error: "Hackathon not found" } };
+      if (res.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple hackathons. Which one's website do you want?",
+            matches: res.matches.map((h: any) => ({ name: h.name, slug: h.slug })),
+          },
+        };
+      }
+
+      const h = res.match;
+      if (!h.url) {
+        return {
+          result: {
+            hackathon: h.name,
+            has_url: false,
+            message: `The official website URL for "${h.name}" is not yet available. The registration link will be updated soon. You can check back later or view the hackathon details page.`,
+            details_page: `https://hackerbuddy.lovable.app/hackathon/${h.slug}`,
+          },
+        };
+      }
+
+      return {
+        result: {
+          hackathon: h.name,
+          has_url: true,
+          url: h.url,
+          message: `Official website for "${h.name}": ${h.url}`,
+        },
+      };
+    }
+
     default:
       return { result: { error: "Unknown action" } };
   }
@@ -1576,6 +1817,7 @@ serve(async (req) => {
     let systemPrompt = `You are HackerBuddy, a helpful AI assistant for a hackathon community platform.
 
 CURRENT DATE AND TIME: ${formattedDateTime}
+You know the current date and time. When asked about time, date, or "what time is it", use your get_current_datetime tool or state the time from the context above.
 
 CURRENT USER CONTEXT (you already know this - NEVER ask for any of this):
 - Username: ${profile?.username || "Unknown"}
@@ -1605,7 +1847,13 @@ DISAMBIGUATION RULES:
 - Wait for user selection before proceeding
 
 Available capabilities:
+- Get current date/time (use get_current_datetime tool)
+- Get weather for any location (use get_weather tool)
+- Web search for information (use web_search tool)
 - Search hackathons by partial name
+- Get hackathon calendar link (add to Google Calendar)
+- Get hackathon share link (shareable URL)
+- Visit hackathon website (get official URL)
 - Get official hackathon links from the database  
 - View current hackathon participations
 - Create teams, leave teams, delete teams
@@ -1615,12 +1863,23 @@ Available capabilities:
 - Set team "looking for teammates" status (with visibility: anyone or friends_only)
 - Search users by username/userid
 - SUBMIT NEW HACKATHONS for admin approval (use submit_hackathon tool)
-- Web search for external information
+
+MULTI-TASK EXECUTION RULES (VERY IMPORTANT):
+When a user requests MULTIPLE actions in one message (e.g., "remove friend X and send them a new request", or "create team for hackathon Y with name Z and invite user A"):
+1. GATHER ALL INFORMATION FIRST: Before executing ANY action, make sure you have ALL required info for ALL tasks.
+2. ASK ONCE FOR MISSING INFO: If info is missing for any task, ask for ALL missing pieces in a SINGLE message.
+3. EXECUTE SEQUENTIALLY: Once you have all info and user confirms, execute tasks one-by-one in logical order.
+4. REPORT RESULTS: After completing all tasks, summarize what was done and any errors.
+
+Example multi-task flow:
+- User: "Remove soumyajit2005 and send him a friend request again"
+- You: First remove the friend, then send the request (no extra confirmation needed between steps)
+- Report: "Done! I removed soumyajit2005 from your friends and sent a new friend request."
 
 HACKATHON SUBMISSION RULES:
 When a user wants to ADD/SUBMIT a new hackathon:
 1. DO NOT say you cannot add hackathons - you CAN submit them for admin approval
-2. Ask the user for the REQUIRED information one by one if not provided:
+2. Ask the user for the REQUIRED information in ONE message if not provided:
    - Name of the hackathon
    - Start date (when does it begin?)
    - End date (when does it end?)
@@ -1628,7 +1887,13 @@ When a user wants to ADD/SUBMIT a new hackathon:
    - Region (North America, Europe, Asia, Global, etc.)
 3. Optional info to ask: description, website URL, organizer name
 4. Once you have the required info, use submit_hackathon tool to submit for approval
-5. Tell the user their submission will be reviewed by an admin`;
+5. Tell the user their submission will be reviewed by an admin
+
+HACKATHON LINK HANDLING:
+- When user asks to add a hackathon to calendar, use get_hackathon_calendar_link tool
+- When user asks to share a hackathon, use get_hackathon_share_link tool
+- When user asks for the hackathon website/URL, use visit_hackathon_website tool
+- If a hackathon has no URL yet, clearly tell the user "The registration link will be updated soon"`;
 
     if (existingSummary?.summary) {
       systemPrompt += `\n\nPrevious conversation summary:\n${existingSummary.summary}`;
