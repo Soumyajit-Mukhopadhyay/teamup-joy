@@ -5,8 +5,9 @@ import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Users, UserPlus, Eye, EyeOff } from 'lucide-react';
+import { Users, UserPlus, Eye, EyeOff, Globe, UserCheck } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
 interface TeamLookingForMembers {
   id: string;
@@ -28,7 +29,8 @@ interface LookingForTeammatesSectionProps {
 
 const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectionProps) => {
   const { user } = useAuth();
-  const [teams, setTeams] = useState<TeamLookingForMembers[]>([]);
+  const [anyoneTeams, setAnyoneTeams] = useState<TeamLookingForMembers[]>([]);
+  const [friendsTeams, setFriendsTeams] = useState<TeamLookingForMembers[]>([]);
   const [loading, setLoading] = useState(true);
   const [requestingTeamId, setRequestingTeamId] = useState<string | null>(null);
 
@@ -48,7 +50,8 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
       .eq('looking_for_teammates', true);
 
     if (error || !teamsData) {
-      setTeams([]);
+      setAnyoneTeams([]);
+      setFriendsTeams([]);
       setLoading(false);
       return;
     }
@@ -74,7 +77,8 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
     });
 
     if (visibleTeams.length === 0) {
-      setTeams([]);
+      setAnyoneTeams([]);
+      setFriendsTeams([]);
       setLoading(false);
       return;
     }
@@ -129,7 +133,9 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
         already_requested: requestedTeamIds.has(team.id),
       }));
 
-    setTeams(enrichedTeams);
+    // Separate into two lists
+    setAnyoneTeams(enrichedTeams.filter(t => t.looking_visibility === 'anyone'));
+    setFriendsTeams(enrichedTeams.filter(t => t.looking_visibility === 'friends_only'));
     setLoading(false);
   };
 
@@ -139,25 +145,90 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
     setRequestingTeamId(team.id);
 
     try {
-      const { error } = await supabase.from('team_requests').insert({
-        team_id: team.id,
-        from_user_id: user.id,
-        to_user_id: team.leader_profile.user_id,
-        status: 'pending',
-      });
+      // Check if request already exists
+      const { data: existing } = await supabase
+        .from('team_requests')
+        .select('id, status')
+        .eq('team_id', team.id)
+        .eq('from_user_id', user.id)
+        .maybeSingle();
 
-      if (error) throw error;
+      if (existing) {
+        if (existing.status === 'pending') {
+          toast.error('Request already pending');
+          return;
+        }
+        // Update existing request
+        await supabase
+          .from('team_requests')
+          .update({ status: 'pending', updated_at: new Date().toISOString() })
+          .eq('id', existing.id);
+      } else {
+        const { error } = await supabase.from('team_requests').insert({
+          team_id: team.id,
+          from_user_id: user.id,
+          to_user_id: team.leader_profile.user_id,
+          status: 'pending',
+        });
+
+        if (error) throw error;
+      }
 
       toast.success(`Request sent to join "${team.name}"`);
-      setTeams(prev => prev.map(t => 
-        t.id === team.id ? { ...t, already_requested: true } : t
-      ));
+      
+      // Update both lists
+      const updateTeam = (t: TeamLookingForMembers) => 
+        t.id === team.id ? { ...t, already_requested: true } : t;
+      setAnyoneTeams(prev => prev.map(updateTeam));
+      setFriendsTeams(prev => prev.map(updateTeam));
     } catch (error: any) {
       toast.error(error.message || 'Failed to send request');
     } finally {
       setRequestingTeamId(null);
     }
   };
+
+  const renderTeamCard = (team: TeamLookingForMembers) => (
+    <div 
+      key={team.id} 
+      className="flex items-center justify-between p-3 bg-secondary/50 rounded-lg"
+    >
+      <div className="flex items-center gap-3 min-w-0 flex-1">
+        <Avatar className="h-10 w-10 shrink-0">
+          <AvatarFallback className="bg-primary/20 text-primary">
+            {team.name[0]?.toUpperCase()}
+          </AvatarFallback>
+        </Avatar>
+        <div className="min-w-0">
+          <p className="font-medium truncate">{team.name}</p>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            <span>by @{team.leader_profile?.userid}</span>
+            <span>•</span>
+            <span>{team.member_count} member{team.member_count !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+      </div>
+
+      <Button
+        size="sm"
+        variant={team.already_requested ? 'outline' : 'default'}
+        disabled={team.already_requested || requestingTeamId === team.id}
+        onClick={() => requestToJoin(team)}
+        className="shrink-0 ml-2"
+      >
+        {team.already_requested ? (
+          'Requested'
+        ) : requestingTeamId === team.id ? (
+          'Sending...'
+        ) : (
+          <>
+            <UserPlus className="h-4 w-4 mr-1" />
+            Join
+          </>
+        )}
+      </Button>
+    </div>
+  );
 
   if (loading) {
     return (
@@ -171,7 +242,9 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
     );
   }
 
-  if (teams.length === 0) {
+  const totalTeams = anyoneTeams.length + friendsTeams.length;
+
+  if (totalTeams === 0) {
     return null; // Don't show section if no teams are looking
   }
 
@@ -180,63 +253,49 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
       <div className="flex items-center gap-2 mb-4">
         <Users className="h-5 w-5 text-primary" />
         <h3 className="text-lg font-semibold">Looking for Teammates</h3>
-        <Badge variant="secondary" className="ml-auto">{teams.length}</Badge>
+        <Badge variant="secondary" className="ml-auto">{totalTeams}</Badge>
       </div>
 
-      <ScrollArea className="max-h-[300px]">
-        <div className="space-y-3 pr-2">
-          {teams.map((team) => (
-            <div 
-              key={team.id} 
-              className="flex items-center justify-between p-3 bg-secondary/50 rounded-lg"
-            >
-              <div className="flex items-center gap-3 min-w-0 flex-1">
-                <Avatar className="h-10 w-10 shrink-0">
-                  <AvatarFallback className="bg-primary/20 text-primary">
-                    {team.name[0]?.toUpperCase()}
-                  </AvatarFallback>
-                </Avatar>
-                <div className="min-w-0">
-                  <p className="font-medium truncate">{team.name}</p>
-                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                    <span>by @{team.leader_profile?.userid}</span>
-                    <span>•</span>
-                    <span>{team.member_count} member{team.member_count !== 1 ? 's' : ''}</span>
-                    {team.looking_visibility === 'friends_only' && (
-                      <>
-                        <span>•</span>
-                        <span className="flex items-center gap-1">
-                          <EyeOff className="h-3 w-3" />
-                          Friends only
-                        </span>
-                      </>
-                    )}
-                  </div>
-                </div>
-              </div>
+      <Tabs defaultValue={anyoneTeams.length > 0 ? "anyone" : "friends"} className="w-full">
+        <TabsList className="w-full mb-4">
+          <TabsTrigger value="anyone" className="flex-1 gap-1 text-xs">
+            <Globe className="h-3 w-3" />
+            Anyone ({anyoneTeams.length})
+          </TabsTrigger>
+          <TabsTrigger value="friends" className="flex-1 gap-1 text-xs">
+            <UserCheck className="h-3 w-3" />
+            Friends ({friendsTeams.length})
+          </TabsTrigger>
+        </TabsList>
 
-              <Button
-                size="sm"
-                variant={team.already_requested ? 'outline' : 'default'}
-                disabled={team.already_requested || requestingTeamId === team.id}
-                onClick={() => requestToJoin(team)}
-                className="shrink-0 ml-2"
-              >
-                {team.already_requested ? (
-                  'Requested'
-                ) : requestingTeamId === team.id ? (
-                  'Sending...'
-                ) : (
-                  <>
-                    <UserPlus className="h-4 w-4 mr-1" />
-                    Join
-                  </>
-                )}
-              </Button>
-            </div>
-          ))}
-        </div>
-      </ScrollArea>
+        <TabsContent value="anyone">
+          {anyoneTeams.length === 0 ? (
+            <p className="text-muted-foreground text-sm text-center py-4">
+              No teams open to anyone right now
+            </p>
+          ) : (
+            <ScrollArea className="max-h-[250px]">
+              <div className="space-y-3 pr-2">
+                {anyoneTeams.map(renderTeamCard)}
+              </div>
+            </ScrollArea>
+          )}
+        </TabsContent>
+
+        <TabsContent value="friends">
+          {friendsTeams.length === 0 ? (
+            <p className="text-muted-foreground text-sm text-center py-4">
+              No friend teams looking for members
+            </p>
+          ) : (
+            <ScrollArea className="max-h-[250px]">
+              <div className="space-y-3 pr-2">
+                {friendsTeams.map(renderTeamCard)}
+              </div>
+            </ScrollArea>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 };

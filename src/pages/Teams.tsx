@@ -6,9 +6,10 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Users, MessageCircle, Calendar, Settings, X } from 'lucide-react';
+import { Users, MessageCircle, Calendar, Settings, X, Eye, EyeOff } from 'lucide-react';
 import { format, parseISO, isAfter } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
 import { useAIActionRefresh } from '@/hooks/useAIActionRefresh';
 import {
   AlertDialog,
@@ -20,6 +21,13 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 
 interface Team {
   id: string;
@@ -30,6 +38,8 @@ interface Team {
   member_count?: number;
   is_leader?: boolean;
   hackathon_name?: string;
+  looking_for_teammates?: boolean;
+  looking_visibility?: string;
 }
 
 interface HackathonInfo {
@@ -47,6 +57,7 @@ const Teams = () => {
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [leavingTeam, setLeavingTeam] = useState(false);
+  const [togglingTeamId, setTogglingTeamId] = useState<string | null>(null);
 
   // Fetch hackathon info for a list of hackathon IDs
   const fetchHackathonInfo = useCallback(async (hackathonIds: string[]) => {
@@ -253,6 +264,58 @@ const Teams = () => {
     }
   };
 
+  const handleToggleLooking = async (team: Team, looking: boolean) => {
+    if (!team.is_leader) {
+      toast.error('Only team leaders can change this setting');
+      return;
+    }
+
+    setTogglingTeamId(team.id);
+
+    try {
+      const { error } = await supabase
+        .from('teams')
+        .update({ looking_for_teammates: looking })
+        .eq('id', team.id);
+
+      if (error) throw error;
+
+      setTeams(prev => prev.map(t => 
+        t.id === team.id ? { ...t, looking_for_teammates: looking } : t
+      ));
+
+      toast.success(looking ? 'Now looking for teammates!' : 'No longer looking for teammates');
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to update setting');
+    } finally {
+      setTogglingTeamId(null);
+    }
+  };
+
+  const handleVisibilityChange = async (team: Team, visibility: string) => {
+    if (!team.is_leader) {
+      toast.error('Only team leaders can change this setting');
+      return;
+    }
+
+    try {
+      const { error } = await supabase
+        .from('teams')
+        .update({ looking_visibility: visibility })
+        .eq('id', team.id);
+
+      if (error) throw error;
+
+      setTeams(prev => prev.map(t => 
+        t.id === team.id ? { ...t, looking_visibility: visibility } : t
+      ));
+
+      toast.success(`Visibility set to ${visibility === 'anyone' ? 'Anyone' : 'Friends only'}`);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to update visibility');
+    }
+  };
+
   if (authLoading) {
     return (
       <div className="min-h-screen bg-background">
@@ -337,6 +400,62 @@ const Teams = () => {
                       <Badge variant="secondary" className="ml-2 text-xs">Ongoing</Badge>
                     )}
                   </div>
+
+                  {/* Looking for Teammates Toggle (only for leaders in ongoing hackathons) */}
+                  {team.is_leader && hackathonOngoing && (
+                    <div className="mb-4 p-3 bg-secondary/30 rounded-lg space-y-2">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                          <Users className="h-4 w-4 text-primary" />
+                          <span className="text-sm font-medium">Looking for teammates</span>
+                        </div>
+                        <Switch
+                          checked={team.looking_for_teammates || false}
+                          disabled={togglingTeamId === team.id}
+                          onCheckedChange={(checked) => handleToggleLooking(team, checked)}
+                        />
+                      </div>
+                      
+                      {team.looking_for_teammates && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-xs text-muted-foreground">Visibility:</span>
+                          <Select
+                            value={team.looking_visibility || 'anyone'}
+                            onValueChange={(value) => handleVisibilityChange(team, value)}
+                          >
+                            <SelectTrigger className="h-7 w-32 text-xs">
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="anyone">
+                                <span className="flex items-center gap-1">
+                                  <Eye className="h-3 w-3" /> Anyone
+                                </span>
+                              </SelectItem>
+                              <SelectItem value="friends_only">
+                                <span className="flex items-center gap-1">
+                                  <EyeOff className="h-3 w-3" /> Friends only
+                                </span>
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* Show status badge if looking for teammates (for non-leaders too) */}
+                  {!team.is_leader && team.looking_for_teammates && (
+                    <div className="mb-4">
+                      <Badge variant="secondary" className="text-xs gap-1">
+                        {team.looking_visibility === 'friends_only' ? (
+                          <><EyeOff className="h-3 w-3" /> Looking (Friends only)</>
+                        ) : (
+                          <><Eye className="h-3 w-3" /> Looking for teammates</>
+                        )}
+                      </Badge>
+                    </div>
+                  )}
 
                   <div className="flex gap-2">
                     <Link to={`/team/${team.id}/chat`} className="flex-1">
