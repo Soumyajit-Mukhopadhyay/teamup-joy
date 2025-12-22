@@ -5,12 +5,32 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Check, X, Users, Clock, Bell, UserPlus, Sparkles } from 'lucide-react';
+import { Check, X, Users, Bell, UserPlus, Sparkles, UserCheck } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { format } from 'date-fns';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
-interface TeamRequest {
+// Team Invite = Someone invited YOU to join their team
+interface TeamInvite {
+  id: string;
+  team_id: string;
+  from_user_id: string;
+  to_user_id: string;
+  status: string;
+  created_at: string;
+  team: {
+    id: string;
+    name: string;
+    hackathon_id: string;
+  };
+  from_profile: {
+    username: string;
+    userid: string;
+  };
+}
+
+// Join Request = Someone wants to join YOUR team (you are team leader)
+interface JoinRequest {
   id: string;
   team_id: string;
   from_user_id: string;
@@ -54,7 +74,8 @@ interface Notification {
 const Notifications = () => {
   const navigate = useNavigate();
   const { user, loading: authLoading } = useAuth();
-  const [teamRequests, setTeamRequests] = useState<TeamRequest[]>([]);
+  const [teamInvites, setTeamInvites] = useState<TeamInvite[]>([]);
+  const [joinRequests, setJoinRequests] = useState<JoinRequest[]>([]);
   const [friendRequests, setFriendRequests] = useState<FriendRequest[]>([]);
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [loading, setLoading] = useState(true);
@@ -79,6 +100,13 @@ const Notifications = () => {
       }, () => {
         fetchAllNotifications();
       })
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'team_requests'
+      }, () => {
+        fetchAllNotifications();
+      })
       .subscribe();
 
     return () => {
@@ -89,29 +117,48 @@ const Notifications = () => {
   const fetchAllNotifications = async () => {
     if (!user) return;
 
-    // Fetch team requests
-    const { data: teamData } = await supabase
+    // Fetch all team requests where user is the recipient
+    const { data: teamRequestData } = await supabase
       .from('team_requests')
-      .select(`*, team:teams(id, name, hackathon_id)`)
+      .select(`*, team:teams(id, name, hackathon_id, created_by)`)
       .eq('to_user_id', user.id)
       .eq('status', 'pending')
       .order('created_at', { ascending: false });
 
-    if (teamData && teamData.length > 0) {
-      const fromUserIds = teamData.map(r => r.from_user_id);
+    if (teamRequestData && teamRequestData.length > 0) {
+      const fromUserIds = teamRequestData.map(r => r.from_user_id);
       const { data: profiles } = await supabase
         .from('profiles')
         .select('user_id, username, userid')
         .in('user_id', fromUserIds);
 
-      const requestsWithProfiles = teamData.map(req => ({
+      const requestsWithProfiles = teamRequestData.map(req => ({
         ...req,
         from_profile: profiles?.find(p => p.user_id === req.from_user_id) || { username: 'Unknown', userid: 'unknown' }
       }));
 
-      setTeamRequests(requestsWithProfiles as TeamRequest[]);
+      // Separate into invites (someone invited you) vs join requests (someone wants to join your team)
+      // If team.created_by === user.id OR user is a leader of the team, it's a join request
+      // Otherwise, it's an invite to join their team
+      const invites: TeamInvite[] = [];
+      const joins: JoinRequest[] = [];
+
+      for (const req of requestsWithProfiles) {
+        const team = req.team as any;
+        if (team?.created_by === user.id) {
+          // Someone wants to join MY team
+          joins.push(req as JoinRequest);
+        } else {
+          // Someone invited ME to their team
+          invites.push(req as TeamInvite);
+        }
+      }
+
+      setTeamInvites(invites);
+      setJoinRequests(joins);
     } else {
-      setTeamRequests([]);
+      setTeamInvites([]);
+      setJoinRequests([]);
     }
 
     // Fetch friend requests
@@ -151,12 +198,57 @@ const Notifications = () => {
     setLoading(false);
   };
 
-  const handleAcceptTeam = async (request: TeamRequest) => {
+  // Accept invite to join someone else's team
+  const handleAcceptInvite = async (invite: TeamInvite) => {
+    try {
+      await supabase.from('team_requests').update({ status: 'accepted' }).eq('id', invite.id);
+      await supabase.from('team_members').insert({
+        team_id: invite.team_id,
+        user_id: user!.id,
+        role: 'member',
+      });
+
+      if (invite.team?.hackathon_id) {
+        const { data: existing } = await supabase
+          .from('hackathon_participations')
+          .select('id')
+          .eq('user_id', user!.id)
+          .eq('hackathon_id', invite.team.hackathon_id)
+          .maybeSingle();
+
+        if (!existing) {
+          await supabase.from('hackathon_participations').insert({
+            user_id: user!.id,
+            hackathon_id: invite.team.hackathon_id,
+            status: 'current',
+          });
+        }
+      }
+
+      toast.success(`You joined ${invite.team?.name}!`);
+      setTeamInvites(prev => prev.filter(r => r.id !== invite.id));
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to accept invite');
+    }
+  };
+
+  const handleDeclineInvite = async (inviteId: string) => {
+    try {
+      await supabase.from('team_requests').update({ status: 'declined' }).eq('id', inviteId);
+      toast.success('Invite declined');
+      setTeamInvites(prev => prev.filter(r => r.id !== inviteId));
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to decline invite');
+    }
+  };
+
+  // Accept someone's request to join MY team
+  const handleAcceptJoinRequest = async (request: JoinRequest) => {
     try {
       await supabase.from('team_requests').update({ status: 'accepted' }).eq('id', request.id);
       await supabase.from('team_members').insert({
         team_id: request.team_id,
-        user_id: user!.id,
+        user_id: request.from_user_id,
         role: 'member',
       });
 
@@ -164,31 +256,31 @@ const Notifications = () => {
         const { data: existing } = await supabase
           .from('hackathon_participations')
           .select('id')
-          .eq('user_id', user!.id)
+          .eq('user_id', request.from_user_id)
           .eq('hackathon_id', request.team.hackathon_id)
           .maybeSingle();
 
         if (!existing) {
           await supabase.from('hackathon_participations').insert({
-            user_id: user!.id,
+            user_id: request.from_user_id,
             hackathon_id: request.team.hackathon_id,
             status: 'current',
           });
         }
       }
 
-      toast.success('You joined the team!');
-      setTeamRequests(prev => prev.filter(r => r.id !== request.id));
+      toast.success(`${request.from_profile.username} joined ${request.team?.name}!`);
+      setJoinRequests(prev => prev.filter(r => r.id !== request.id));
     } catch (error: any) {
       toast.error(error.message || 'Failed to accept request');
     }
   };
 
-  const handleDeclineTeam = async (requestId: string) => {
+  const handleDeclineJoinRequest = async (requestId: string) => {
     try {
       await supabase.from('team_requests').update({ status: 'declined' }).eq('id', requestId);
       toast.success('Request declined');
-      setTeamRequests(prev => prev.filter(r => r.id !== requestId));
+      setJoinRequests(prev => prev.filter(r => r.id !== requestId));
     } catch (error: any) {
       toast.error(error.message || 'Failed to decline request');
     }
@@ -225,7 +317,7 @@ const Notifications = () => {
     setNotifications(prev => prev.filter(n => n.id !== notifId));
   };
 
-  const totalPending = teamRequests.length + friendRequests.length + notifications.filter(n => !n.is_read).length;
+  const totalPending = teamInvites.length + joinRequests.length + friendRequests.length + notifications.filter(n => !n.is_read).length;
 
   return (
     <div className="min-h-screen bg-background">
@@ -247,13 +339,21 @@ const Notifications = () => {
         {loading ? (
           <div className="text-center py-16 text-muted-foreground">Loading...</div>
         ) : (
-          <Tabs defaultValue="team" className="w-full">
-            <TabsList className="w-full justify-start mb-6">
-              <TabsTrigger value="team" className="relative">
+          <Tabs defaultValue="invites" className="w-full">
+            <TabsList className="w-full justify-start mb-6 flex-wrap h-auto gap-1">
+              <TabsTrigger value="invites" className="relative">
                 Team Invites
-                {teamRequests.length > 0 && (
+                {teamInvites.length > 0 && (
                   <span className="ml-1 bg-primary text-primary-foreground text-xs px-1.5 rounded-full">
-                    {teamRequests.length}
+                    {teamInvites.length}
+                  </span>
+                )}
+              </TabsTrigger>
+              <TabsTrigger value="joinrequests" className="relative">
+                Join Requests
+                {joinRequests.length > 0 && (
+                  <span className="ml-1 bg-primary text-primary-foreground text-xs px-1.5 rounded-full">
+                    {joinRequests.length}
                   </span>
                 )}
               </TabsTrigger>
@@ -275,15 +375,66 @@ const Notifications = () => {
               </TabsTrigger>
             </TabsList>
 
-            <TabsContent value="team">
-              {teamRequests.length === 0 ? (
+            {/* Team Invites - Someone invited YOU to join their team */}
+            <TabsContent value="invites">
+              {teamInvites.length === 0 ? (
                 <div className="glass-card p-8 text-center">
                   <Users className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
                   <p className="text-muted-foreground">No pending team invitations</p>
                 </div>
               ) : (
                 <div className="space-y-4">
-                  {teamRequests.map((request) => (
+                  {teamInvites.map((invite) => (
+                    <div key={invite.id} className="glass-card p-4 animate-fade-in">
+                      <div className="flex items-start justify-between gap-4">
+                        <div className="flex items-center gap-3">
+                          <Avatar className="h-10 w-10">
+                            <AvatarFallback className="bg-primary/20 text-primary">
+                              {invite.from_profile.username[0]?.toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <p className="font-medium">
+                              <span className="text-primary">@{invite.from_profile.userid}</span>
+                              {' invited you to join'}
+                            </p>
+                            <p className="text-lg font-semibold">{invite.team?.name}</p>
+                            <p className="text-xs text-muted-foreground">
+                              {format(new Date(invite.created_at), 'MMM d, yyyy')}
+                            </p>
+                          </div>
+                        </div>
+
+                        <div className="flex gap-2">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => handleDeclineInvite(invite.id)}
+                            className="text-destructive hover:text-destructive"
+                          >
+                            <X className="h-4 w-4" />
+                          </Button>
+                          <Button size="sm" onClick={() => handleAcceptInvite(invite)} className="btn-gradient">
+                            <Check className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </TabsContent>
+
+            {/* Join Requests - Someone wants to join YOUR team */}
+            <TabsContent value="joinrequests">
+              {joinRequests.length === 0 ? (
+                <div className="glass-card p-8 text-center">
+                  <UserCheck className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
+                  <p className="text-muted-foreground">No pending join requests</p>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  {joinRequests.map((request) => (
                     <div key={request.id} className="glass-card p-4 animate-fade-in">
                       <div className="flex items-start justify-between gap-4">
                         <div className="flex items-center gap-3">
@@ -295,7 +446,7 @@ const Notifications = () => {
                           <div>
                             <p className="font-medium">
                               <span className="text-primary">@{request.from_profile.userid}</span>
-                              {' invited you to join'}
+                              {' wants to join your team'}
                             </p>
                             <p className="text-lg font-semibold">{request.team?.name}</p>
                             <p className="text-xs text-muted-foreground">
@@ -308,12 +459,12 @@ const Notifications = () => {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => handleDeclineTeam(request.id)}
+                            onClick={() => handleDeclineJoinRequest(request.id)}
                             className="text-destructive hover:text-destructive"
                           >
                             <X className="h-4 w-4" />
                           </Button>
-                          <Button size="sm" onClick={() => handleAcceptTeam(request)} className="btn-gradient">
+                          <Button size="sm" onClick={() => handleAcceptJoinRequest(request)} className="btn-gradient">
                             <Check className="h-4 w-4" />
                           </Button>
                         </div>

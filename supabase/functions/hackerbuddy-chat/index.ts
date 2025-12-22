@@ -328,8 +328,46 @@ const tools = [
     type: "function",
     function: {
       name: "get_pending_requests",
-      description: "Get pending friend requests and team invitations for the user",
+      description: "Get pending friend requests, team invitations (from others to you), and join requests (from others wanting to join YOUR teams) for the user",
       parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_join_requests",
+      description: "Get all pending requests from other users who want to join your teams. Shows who wants to join which of your teams.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "accept_join_request",
+      description: "Accept a join request from someone who wants to join your team. REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          team_query: { type: "string", description: "Team name or ID (partial ok)" },
+          user_query: { type: "string", description: "Username or userid of the person requesting to join (partial ok)" },
+        },
+        required: ["user_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "decline_join_request",
+      description: "Decline a join request from someone who wants to join your team. REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          team_query: { type: "string", description: "Team name or ID (partial ok)" },
+          user_query: { type: "string", description: "Username or userid of the person requesting to join (partial ok)" },
+        },
+        required: ["user_query"],
+      },
     },
   },
   {
@@ -531,6 +569,8 @@ const CONFIRMATION_REQUIRED_ACTIONS = [
   "set_looking_for_teammates",
   "remove_team_member",
   "request_to_join_team",
+  "accept_join_request",
+  "decline_join_request",
 ];
 
 // Blocked/dangerous actions
@@ -2103,6 +2143,15 @@ async function executeToolCall(
     }
 
     case "get_pending_requests": {
+      // Get teams where user is leader to identify join requests
+      const { data: userTeams } = await supabase
+        .from("teams")
+        .select("id, name")
+        .eq("created_by", userId);
+      
+      const userTeamIds = (userTeams || []).map((t: any) => t.id);
+      const userTeamMap = new Map((userTeams || []).map((t: any) => [t.id, t.name]));
+
       const [friendReqs, teamReqs] = await Promise.all([
         supabase
           .from("friend_requests")
@@ -2118,36 +2167,365 @@ async function executeToolCall(
 
       // Get user info for friend requests
       const friendUserIds = (friendReqs.data || []).map((r: any) => r.from_user_id);
-      const { data: friendProfiles } = friendUserIds.length
-        ? await supabase.from("profiles").select("user_id, username, userid").in("user_id", friendUserIds)
+      const teamReqUserIds = (teamReqs.data || []).map((r: any) => r.from_user_id);
+      const allUserIds = [...new Set([...friendUserIds, ...teamReqUserIds])];
+      
+      const { data: allProfiles } = allUserIds.length
+        ? await supabase.from("profiles").select("user_id, username, userid").in("user_id", allUserIds)
         : { data: [] };
-      const friendProfileMap = new Map((friendProfiles || []).map((p: any) => [p.user_id, p]));
+      const profileMap = new Map((allProfiles || []).map((p: any) => [p.user_id, p]));
 
       // Get team info for team requests
       const teamIds = (teamReqs.data || []).map((r: any) => r.team_id);
       const { data: teams } = teamIds.length
-        ? await supabase.from("teams").select("id, name, hackathon_id").in("id", teamIds)
+        ? await supabase.from("teams").select("id, name, hackathon_id, created_by").in("id", teamIds)
         : { data: [] };
       const teamMap = new Map((teams || []).map((t: any) => [t.id, t]));
+
+      // Separate team requests: invites (to join other's team) vs join requests (to join YOUR team)
+      const teamInvites: any[] = [];
+      const joinRequests: any[] = [];
+
+      for (const req of (teamReqs.data || [])) {
+        const team = teamMap.get(req.team_id) as any;
+        const profile = profileMap.get(req.from_user_id) as any;
+        
+        if (team?.created_by === userId) {
+          // Someone wants to join MY team
+          joinRequests.push({
+            id: req.id,
+            created_at: req.created_at,
+            team: team ? { name: team.name } : null,
+            from_user: profile ? { username: profile.username, userid: profile.userid } : null,
+          });
+        } else {
+          // Someone invited ME to their team
+          teamInvites.push({
+            id: req.id,
+            created_at: req.created_at,
+            team: team ? { name: team.name } : null,
+            from_user: profile ? { username: profile.username, userid: profile.userid } : null,
+          });
+        }
+      }
 
       return {
         result: {
           friend_requests: (friendReqs.data || []).map((r: any) => {
-            const profile = friendProfileMap.get(r.from_user_id) as { username: string; userid: string } | undefined;
+            const profile = profileMap.get(r.from_user_id) as { username: string; userid: string } | undefined;
             return {
               id: r.id,
               created_at: r.created_at,
               from_user: profile ? { username: profile.username, userid: profile.userid } : null,
             };
           }),
-          team_requests: (teamReqs.data || []).map((r: any) => {
-            const team = teamMap.get(r.team_id) as { name: string } | undefined;
-            return {
-              id: r.id,
-              created_at: r.created_at,
-              team: team ? { name: team.name } : null,
-            };
-          }),
+          team_invites: teamInvites,
+          join_requests: joinRequests,
+          summary: {
+            friend_requests: friendReqs.data?.length || 0,
+            team_invites: teamInvites.length,
+            join_requests: joinRequests.length,
+          },
+        },
+      };
+    }
+
+    case "get_join_requests": {
+      // Get teams where user is leader
+      const { data: userTeams } = await supabase
+        .from("teams")
+        .select("id, name, hackathon_id")
+        .eq("created_by", userId);
+      
+      if (!userTeams?.length) {
+        return { result: { message: "You don't have any teams. Create a team first to receive join requests." } };
+      }
+
+      const userTeamIds = userTeams.map((t: any) => t.id);
+
+      // Get pending requests for user's teams
+      const { data: joinRequests, error } = await supabase
+        .from("team_requests")
+        .select("id, team_id, from_user_id, created_at")
+        .in("team_id", userTeamIds)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false });
+
+      if (error) return { result: { error: error.message } };
+      if (!joinRequests?.length) {
+        return { result: { message: "No pending join requests for your teams." } };
+      }
+
+      // Get profiles of requesters
+      const requesterIds = joinRequests.map((r: any) => r.from_user_id);
+      const { data: profiles } = await supabase
+        .from("profiles")
+        .select("user_id, username, userid")
+        .in("user_id", requesterIds);
+
+      const profileMap = new Map((profiles || []).map((p: any) => [p.user_id, p]));
+      const teamMap = new Map(userTeams.map((t: any) => [t.id, t]));
+
+      const requests = joinRequests.map((r: any) => {
+        const profile = profileMap.get(r.from_user_id) as any;
+        const team = teamMap.get(r.team_id) as any;
+        return {
+          request_id: r.id,
+          team_name: team?.name || "Unknown",
+          hackathon_id: team?.hackathon_id,
+          from_user: profile ? { username: profile.username, userid: profile.userid } : { username: "Unknown", userid: "unknown" },
+          created_at: r.created_at,
+        };
+      });
+
+      return {
+        result: {
+          join_requests: requests,
+          count: requests.length,
+          message: `You have ${requests.length} pending join request(s) for your teams`,
+        },
+      };
+    }
+
+    case "accept_join_request": {
+      // Resolve the user who wants to join
+      const who = await resolveUser(args.user_query);
+      if (who.type === "error") return { result: { error: who.error } };
+      if (who.type === "none") return { result: { error: "User not found" } };
+      if (who.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple users. Which one's request do you want to accept?",
+            matches: who.matches.map((u: any) => ({ username: u.username, userid: u.userid })),
+          },
+        };
+      }
+
+      const requester = who.match;
+
+      // Get user's teams
+      const { data: userTeams } = await supabase
+        .from("teams")
+        .select("id, name, hackathon_id")
+        .eq("created_by", userId);
+
+      if (!userTeams?.length) {
+        return { result: { error: "You don't have any teams to accept join requests for." } };
+      }
+
+      // Find the pending request from this user
+      let teamMatch: any = null;
+      let requestMatch: any = null;
+
+      if (args.team_query) {
+        // Filter by team if provided
+        const matchingTeams = userTeams.filter((t: any) => 
+          t.name.toLowerCase().includes(args.team_query.toLowerCase())
+        );
+        if (matchingTeams.length === 0) {
+          return { result: { error: `No team found matching "${args.team_query}" that you own.` } };
+        }
+        if (matchingTeams.length > 1) {
+          return {
+            result: {
+              needs_selection: true,
+              message: "I found multiple teams. Which one?",
+              matches: matchingTeams.map((t: any) => ({ name: t.name })),
+            },
+          };
+        }
+        teamMatch = matchingTeams[0];
+      }
+
+      // Find the request
+      let requestQuery = supabase
+        .from("team_requests")
+        .select("id, team_id, from_user_id, status")
+        .eq("from_user_id", requester.user_id)
+        .eq("status", "pending")
+        .in("team_id", userTeams.map((t: any) => t.id));
+
+      if (teamMatch) {
+        requestQuery = requestQuery.eq("team_id", teamMatch.id);
+      }
+
+      const { data: requests, error: reqError } = await requestQuery;
+
+      if (reqError) return { result: { error: reqError.message } };
+      if (!requests?.length) {
+        return { result: { error: `No pending join request from ${requester.username} (@${requester.userid}) found for your teams.` } };
+      }
+
+      if (requests.length > 1) {
+        // Multiple requests - need team selection
+        const teamIds = requests.map((r: any) => r.team_id);
+        const matchingTeams = userTeams.filter((t: any) => teamIds.includes(t.id));
+        return {
+          result: {
+            needs_selection: true,
+            message: `${requester.username} has pending requests for multiple teams. Which one do you want to accept?`,
+            matches: matchingTeams.map((t: any) => ({ name: t.name })),
+          },
+        };
+      }
+
+      requestMatch = requests[0];
+      teamMatch = teamMatch || userTeams.find((t: any) => t.id === requestMatch.team_id);
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll accept ${requester.username} (@${requester.userid}) into team "${teamMatch.name}". Should I proceed?`,
+        };
+      }
+
+      // Accept the request
+      await supabase.from("team_requests").update({ status: "accepted" }).eq("id", requestMatch.id);
+
+      // Add as team member
+      await supabase.from("team_members").insert({
+        team_id: requestMatch.team_id,
+        user_id: requester.user_id,
+        role: "member",
+      });
+
+      // Add hackathon participation if needed
+      if (teamMatch.hackathon_id) {
+        const { data: existing } = await supabase
+          .from("hackathon_participations")
+          .select("id")
+          .eq("user_id", requester.user_id)
+          .eq("hackathon_id", teamMatch.hackathon_id)
+          .maybeSingle();
+
+        if (!existing) {
+          await supabase.from("hackathon_participations").insert({
+            user_id: requester.user_id,
+            hackathon_id: teamMatch.hackathon_id,
+            status: "current",
+          });
+        }
+      }
+
+      // Notify the requester
+      await supabase.from("notifications").insert({
+        user_id: requester.user_id,
+        type: "join_request_accepted",
+        title: "Join Request Accepted!",
+        message: `Your request to join team "${teamMatch.name}" has been accepted.`,
+        reference_id: teamMatch.id,
+        reference_type: "team",
+      });
+
+      return {
+        result: {
+          success: true,
+          action_type: "accept_join_request",
+          message: `${requester.username} (@${requester.userid}) has been added to team "${teamMatch.name}"!`,
+        },
+      };
+    }
+
+    case "decline_join_request": {
+      // Resolve the user who wants to join
+      const who = await resolveUser(args.user_query);
+      if (who.type === "error") return { result: { error: who.error } };
+      if (who.type === "none") return { result: { error: "User not found" } };
+      if (who.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple users. Which one's request do you want to decline?",
+            matches: who.matches.map((u: any) => ({ username: u.username, userid: u.userid })),
+          },
+        };
+      }
+
+      const requester = who.match;
+
+      // Get user's teams
+      const { data: userTeams } = await supabase
+        .from("teams")
+        .select("id, name")
+        .eq("created_by", userId);
+
+      if (!userTeams?.length) {
+        return { result: { error: "You don't have any teams." } };
+      }
+
+      // Find the pending request from this user
+      let teamMatch: any = null;
+
+      if (args.team_query) {
+        const matchingTeams = userTeams.filter((t: any) => 
+          t.name.toLowerCase().includes(args.team_query.toLowerCase())
+        );
+        if (matchingTeams.length === 0) {
+          return { result: { error: `No team found matching "${args.team_query}" that you own.` } };
+        }
+        if (matchingTeams.length > 1) {
+          return {
+            result: {
+              needs_selection: true,
+              message: "I found multiple teams. Which one?",
+              matches: matchingTeams.map((t: any) => ({ name: t.name })),
+            },
+          };
+        }
+        teamMatch = matchingTeams[0];
+      }
+
+      let requestQuery = supabase
+        .from("team_requests")
+        .select("id, team_id")
+        .eq("from_user_id", requester.user_id)
+        .eq("status", "pending")
+        .in("team_id", userTeams.map((t: any) => t.id));
+
+      if (teamMatch) {
+        requestQuery = requestQuery.eq("team_id", teamMatch.id);
+      }
+
+      const { data: requests, error: reqError } = await requestQuery;
+
+      if (reqError) return { result: { error: reqError.message } };
+      if (!requests?.length) {
+        return { result: { error: `No pending join request from ${requester.username} found for your teams.` } };
+      }
+
+      if (requests.length > 1) {
+        const teamIds = requests.map((r: any) => r.team_id);
+        const matchingTeams = userTeams.filter((t: any) => teamIds.includes(t.id));
+        return {
+          result: {
+            needs_selection: true,
+            message: `${requester.username} has pending requests for multiple teams. Which one do you want to decline?`,
+            matches: matchingTeams.map((t: any) => ({ name: t.name })),
+          },
+        };
+      }
+
+      const requestMatch = requests[0];
+      teamMatch = teamMatch || userTeams.find((t: any) => t.id === requestMatch.team_id);
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll decline ${requester.username}'s request to join team "${teamMatch.name}". Should I proceed?`,
+        };
+      }
+
+      // Decline the request
+      await supabase.from("team_requests").update({ status: "declined" }).eq("id", requestMatch.id);
+
+      return {
+        result: {
+          success: true,
+          action_type: "decline_join_request",
+          message: `Declined ${requester.username}'s request to join team "${teamMatch.name}"`,
         },
       };
     }
