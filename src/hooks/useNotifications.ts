@@ -22,8 +22,8 @@ export const useNotifications = () => {
         .eq('user_id', user.id)
         .eq('is_read', false);
 
-      // Count pending team requests
-      const { count: teamCount } = await supabase
+      // Count pending team requests (invites TO the user)
+      const { count: teamInviteCount } = await supabase
         .from('team_requests')
         .select('*', { count: 'exact', head: true })
         .eq('to_user_id', user.id)
@@ -36,7 +36,7 @@ export const useNotifications = () => {
         .eq('to_user_id', user.id)
         .eq('status', 'pending');
 
-      const total = (notifCount || 0) + (teamCount || 0) + (friendCount || 0);
+      const total = (notifCount || 0) + (teamInviteCount || 0) + (friendCount || 0);
       setUnreadCount(total);
       setHasNotification(total > 0);
     };
