@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
@@ -6,9 +6,15 @@ import { Input } from '@/components/ui/input';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Send, Paperclip, ArrowLeft, Download, File, Image as ImageIcon, FileText, Users } from 'lucide-react';
+import { Send, Paperclip, ArrowLeft, Download, File, Image as ImageIcon, FileText, Users, UserPlus, ExternalLink } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { format } from 'date-fns';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu';
 
 interface Message {
   id: string;
@@ -50,6 +56,7 @@ const TeamChat = () => {
   const [sending, setSending] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [showMembers, setShowMembers] = useState(false);
+  const [friendStatuses, setFriendStatuses] = useState<Record<string, 'none' | 'friend' | 'pending'>>({});
 
   useEffect(() => {
     if (!user) {
@@ -126,7 +133,7 @@ const TeamChat = () => {
       .select('user_id, role')
       .eq('team_id', teamId);
 
-    if (memberData) {
+    if (memberData && user) {
       const userIds = memberData.map(m => m.user_id);
       const { data: profiles } = await supabase
         .from('profiles')
@@ -139,6 +146,50 @@ const TeamChat = () => {
       }));
 
       setMembers(membersWithProfiles);
+
+      // Fetch friend statuses for all members (except current user)
+      const otherUserIds = userIds.filter(id => id !== user.id);
+      if (otherUserIds.length > 0) {
+        const statuses: Record<string, 'none' | 'friend' | 'pending'> = {};
+        
+        // Check existing friends
+        const { data: friends } = await supabase
+          .from('friends')
+          .select('user_id, friend_id')
+          .or(`user_id.eq.${user.id},friend_id.eq.${user.id}`);
+        
+        // Check pending requests
+        const { data: sentRequests } = await supabase
+          .from('friend_requests')
+          .select('to_user_id')
+          .eq('from_user_id', user.id)
+          .eq('status', 'pending');
+        
+        const { data: receivedRequests } = await supabase
+          .from('friend_requests')
+          .select('from_user_id')
+          .eq('to_user_id', user.id)
+          .eq('status', 'pending');
+
+        otherUserIds.forEach(id => {
+          const isFriend = friends?.some(f => 
+            (f.user_id === user.id && f.friend_id === id) || 
+            (f.friend_id === user.id && f.user_id === id)
+          );
+          const isPending = sentRequests?.some(r => r.to_user_id === id) || 
+                           receivedRequests?.some(r => r.from_user_id === id);
+          
+          if (isFriend) {
+            statuses[id] = 'friend';
+          } else if (isPending) {
+            statuses[id] = 'pending';
+          } else {
+            statuses[id] = 'none';
+          }
+        });
+
+        setFriendStatuses(statuses);
+      }
     }
   };
 
@@ -263,6 +314,26 @@ const TeamChat = () => {
     setUploading(false);
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
+    }
+  };
+
+  const sendFriendRequest = async (toUserId: string) => {
+    if (!user) return;
+
+    try {
+      const { error } = await supabase
+        .from('friend_requests')
+        .insert({
+          from_user_id: user.id,
+          to_user_id: toUserId,
+        });
+
+      if (error) throw error;
+
+      toast.success('Friend request sent!');
+      setFriendStatuses(prev => ({ ...prev, [toUserId]: 'pending' }));
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to send friend request');
     }
   };
 
@@ -432,21 +503,69 @@ const TeamChat = () => {
           <div className="w-64 glass-card p-4 hidden lg:block">
             <h3 className="font-semibold mb-4">Team Members</h3>
             <div className="space-y-3">
-              {members.map((member) => (
-                <div key={member.user_id} className="flex items-center gap-2">
-                  <Avatar className="h-8 w-8">
-                    <AvatarFallback className="bg-primary/20 text-primary text-xs">
-                      {member.profile.username[0]?.toUpperCase()}
-                    </AvatarFallback>
-                  </Avatar>
-                  <div>
-                    <p className="text-sm font-medium">{member.profile.username}</p>
-                    <p className="text-xs text-muted-foreground">
-                      {member.role === 'leader' ? '👑 Leader' : 'Member'}
-                    </p>
+              {members.map((member) => {
+                const isCurrentUser = member.user_id === user?.id;
+                const friendStatus = friendStatuses[member.user_id];
+                
+                return (
+                  <div key={member.user_id} className="flex items-center justify-between">
+                    <div className="flex items-center gap-2">
+                      <Avatar className="h-8 w-8">
+                        <AvatarFallback className="bg-primary/20 text-primary text-xs">
+                          {member.profile.username[0]?.toUpperCase()}
+                        </AvatarFallback>
+                      </Avatar>
+                      <div>
+                        <p className="text-sm font-medium">{member.profile.username}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {member.role === 'leader' ? '👑 Leader' : 'Member'}
+                          {isCurrentUser && ' (You)'}
+                        </p>
+                      </div>
+                    </div>
+                    
+                    {!isCurrentUser && (
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button variant="ghost" size="icon" className="h-8 w-8">
+                            <Users className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem 
+                            onClick={() => navigate(`/user/${member.profile.userid}`)}
+                            className="gap-2"
+                          >
+                            <ExternalLink className="h-4 w-4" />
+                            View Profile
+                          </DropdownMenuItem>
+                          {friendStatus === 'none' && (
+                            <DropdownMenuItem 
+                              onClick={() => sendFriendRequest(member.user_id)}
+                              className="gap-2"
+                            >
+                              <UserPlus className="h-4 w-4" />
+                              Add Friend
+                            </DropdownMenuItem>
+                          )}
+                          {friendStatus === 'pending' && (
+                            <DropdownMenuItem disabled className="gap-2 text-muted-foreground">
+                              <UserPlus className="h-4 w-4" />
+                              Request Pending
+                            </DropdownMenuItem>
+                          )}
+                          {friendStatus === 'friend' && (
+                            <DropdownMenuItem disabled className="gap-2 text-muted-foreground">
+                              <Users className="h-4 w-4" />
+                              Already Friends
+                            </DropdownMenuItem>
+                          )}
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                   </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
           </div>
         )}

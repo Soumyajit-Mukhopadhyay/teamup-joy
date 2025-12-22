@@ -12,11 +12,13 @@ import {
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import useIsAdmin from '@/hooks/useIsAdmin';
 import { usePendingRequests } from '@/hooks/usePendingRequests';
+import { usePendingFriendRequests } from '@/hooks/usePendingFriendRequests';
 
 const Header = () => {
   const { user, profile, signOut } = useAuth();
   const { isAdmin } = useIsAdmin();
-  const { hasNotification, markAsViewed } = usePendingRequests();
+  const { hasNotification: hasTeamNotification, markAsViewed: markTeamAsViewed } = usePendingRequests();
+  const { hasNotification: hasFriendNotification, markAsViewed: markFriendAsViewed } = usePendingFriendRequests();
   const navigate = useNavigate();
 
   const handleSignOut = async () => {
@@ -25,7 +27,11 @@ const Header = () => {
   };
 
   const handleRequestsClick = () => {
-    markAsViewed();
+    markTeamAsViewed();
+  };
+
+  const handleFriendsClick = () => {
+    markFriendAsViewed();
   };
 
   return (
@@ -47,10 +53,13 @@ const Header = () => {
                 </Button>
               </Link>
               
-              <Link to="/friends">
-                <Button variant="ghost" size="sm" className="gap-2">
+              <Link to="/friends" onClick={handleFriendsClick}>
+                <Button variant="ghost" size="sm" className="gap-2 relative">
                   <Users className="h-4 w-4" />
                   Friends
+                  {hasFriendNotification && (
+                    <span className="absolute -top-1 -right-1 h-3 w-3 bg-destructive rounded-full animate-pulse" />
+                  )}
                 </Button>
               </Link>
               
@@ -58,7 +67,7 @@ const Header = () => {
                 <Button variant="ghost" size="sm" className="gap-2 relative">
                   <Bell className="h-4 w-4" />
                   Requests
-                  {hasNotification && (
+                  {hasTeamNotification && (
                     <span className="absolute -top-1 -right-1 h-3 w-3 bg-destructive rounded-full animate-pulse" />
                   )}
                 </Button>

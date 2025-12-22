@@ -4,6 +4,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/contexts/AuthContext';
+import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { Eye, EyeOff, Mail, Lock, User, AtSign, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { z } from 'zod';
@@ -94,9 +95,23 @@ const Auth = () => {
 
     try {
       if (isForgotPassword) {
+        // Check if the email exists in profiles (user is registered)
+        const { data: existingProfile } = await supabase
+          .from('profiles')
+          .select('user_id')
+          .eq('user_id', formData.email)
+          .maybeSingle();
+        
+        // Try to send reset email - Supabase will silently fail if email doesn't exist
+        // but we should inform the user properly
         const { error } = await resetPassword(formData.email);
-        if (error) throw error;
-        toast.success('Password reset email sent! Check your inbox.');
+        if (error) {
+          if (error.message?.includes('rate limit')) {
+            throw new Error('Too many attempts. Please try again later.');
+          }
+          throw error;
+        }
+        toast.success('If an account exists with this email, you will receive a password reset link.');
         setIsForgotPassword(false);
       } else if (isSignUp) {
         const result = signUpSchema.safeParse(formData);
