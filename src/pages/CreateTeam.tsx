@@ -4,11 +4,13 @@ import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { useHackathon } from '@/hooks/useHackathons';
 import { toast } from 'sonner';
-import { Users, Search, UserPlus, X, ArrowLeft } from 'lucide-react';
+import { Users, Search, UserPlus, X, ArrowLeft, Eye, EyeOff } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useUserTeamsForHackathon } from '@/hooks/useUserTeamsForHackathon';
 
@@ -29,6 +31,8 @@ const CreateTeam = () => {
   const { teamCount, canCreateMoreTeams } = useUserTeamsForHackathon(hackathon?.slug || hackathon?.id);
 
   const [teamName, setTeamName] = useState('');
+  const [lookingForTeammates, setLookingForTeammates] = useState(false);
+  const [lookingVisibility, setLookingVisibility] = useState<'anyone' | 'friends_only'>('anyone');
   const [searchQuery, setSearchQuery] = useState('');
   const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
   const [selectedMembers, setSelectedMembers] = useState<SearchResult[]>([]);
@@ -144,6 +148,8 @@ const CreateTeam = () => {
           name: teamName,
           hackathon_id: hackathonIdentifier,
           created_by: user.id,
+          looking_for_teammates: lookingForTeammates,
+          looking_visibility: lookingVisibility,
         })
         .select()
         .single();
@@ -262,6 +268,49 @@ const CreateTeam = () => {
                   placeholder="Enter team name"
                   className="input-dark"
                 />
+              </div>
+
+              {/* Looking for Teammates */}
+              <div className="space-y-4 p-4 border border-border rounded-lg">
+                <div className="flex items-center justify-between">
+                  <div className="space-y-0.5">
+                    <Label htmlFor="lookingForTeammates" className="flex items-center gap-2">
+                      <Users className="h-4 w-4" />
+                      Looking for Teammates
+                    </Label>
+                    <p className="text-xs text-muted-foreground">
+                      Let others know your team is open to new members
+                    </p>
+                  </div>
+                  <Switch
+                    id="lookingForTeammates"
+                    checked={lookingForTeammates}
+                    onCheckedChange={setLookingForTeammates}
+                  />
+                </div>
+
+                {lookingForTeammates && (
+                  <RadioGroup
+                    value={lookingVisibility}
+                    onValueChange={(val) => setLookingVisibility(val as 'anyone' | 'friends_only')}
+                    className="mt-3"
+                  >
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="anyone" id="anyone" />
+                      <Label htmlFor="anyone" className="flex items-center gap-2 cursor-pointer">
+                        <Eye className="h-4 w-4" />
+                        Anyone can see
+                      </Label>
+                    </div>
+                    <div className="flex items-center space-x-2">
+                      <RadioGroupItem value="friends_only" id="friends_only" />
+                      <Label htmlFor="friends_only" className="flex items-center gap-2 cursor-pointer">
+                        <EyeOff className="h-4 w-4" />
+                        Friends only (notifies your friends)
+                      </Label>
+                    </div>
+                  </RadioGroup>
+                )}
               </div>
 
               {/* Search Users */}

@@ -104,6 +104,42 @@ export type Database = {
         }
         Relationships: []
       }
+      ai_learning_feedback: {
+        Row: {
+          ai_response: string
+          conversation_id: string | null
+          created_at: string
+          feedback_notes: string | null
+          id: string
+          tool_calls: Json | null
+          user_message: string
+          user_rating: number | null
+          was_successful: boolean | null
+        }
+        Insert: {
+          ai_response: string
+          conversation_id?: string | null
+          created_at?: string
+          feedback_notes?: string | null
+          id?: string
+          tool_calls?: Json | null
+          user_message: string
+          user_rating?: number | null
+          was_successful?: boolean | null
+        }
+        Update: {
+          ai_response?: string
+          conversation_id?: string | null
+          created_at?: string
+          feedback_notes?: string | null
+          id?: string
+          tool_calls?: Json | null
+          user_message?: string
+          user_rating?: number | null
+          was_successful?: boolean | null
+        }
+        Relationships: []
+      }
       friend_messages: {
         Row: {
           content: string | null
@@ -313,6 +349,42 @@ export type Database = {
           },
         ]
       }
+      notifications: {
+        Row: {
+          created_at: string
+          id: string
+          is_read: boolean
+          message: string | null
+          reference_id: string | null
+          reference_type: string | null
+          title: string
+          type: string
+          user_id: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_read?: boolean
+          message?: string | null
+          reference_id?: string | null
+          reference_type?: string | null
+          title: string
+          type: string
+          user_id: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_read?: boolean
+          message?: string | null
+          reference_id?: string | null
+          reference_type?: string | null
+          title?: string
+          type?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       profiles: {
         Row: {
           avatar_url: string | null
@@ -422,6 +494,8 @@ export type Database = {
           created_by: string
           hackathon_id: string
           id: string
+          looking_for_teammates: boolean
+          looking_visibility: string
           name: string
           updated_at: string
         }
@@ -430,6 +504,8 @@ export type Database = {
           created_by: string
           hackathon_id: string
           id?: string
+          looking_for_teammates?: boolean
+          looking_visibility?: string
           name: string
           updated_at?: string
         }
@@ -438,6 +514,8 @@ export type Database = {
           created_by?: string
           hackathon_id?: string
           id?: string
+          looking_for_teammates?: boolean
+          looking_visibility?: string
           name?: string
           updated_at?: string
         }

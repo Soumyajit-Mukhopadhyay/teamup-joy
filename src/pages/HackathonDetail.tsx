@@ -9,6 +9,7 @@ import { Calendar, MapPin, ExternalLink, CalendarPlus, Share2, Globe, Users, Arr
 import { toast } from 'sonner';
 import { useAuth } from '@/contexts/AuthContext';
 import { useUserTeamsForHackathon } from '@/hooks/useUserTeamsForHackathon';
+import LookingForTeammatesSection from '@/components/LookingForTeammatesSection';
 
 const HackathonDetail = () => {
   const { id } = useParams();
@@ -254,8 +255,13 @@ const HackathonDetail = () => {
             </div>
           </div>
 
-          {/* Sidebar - User's Teams */}
-          <div className="lg:col-span-1">
+          {/* Sidebar - User's Teams + Looking for Teammates */}
+          <div className="lg:col-span-1 space-y-6">
+            {/* Looking for Teammates Section */}
+            {user && hackathon?.slug && (
+              <LookingForTeammatesSection hackathonSlug={hackathon.slug} />
+            )}
+
             {user && (
               <div className="glass-card p-6">
                 <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">

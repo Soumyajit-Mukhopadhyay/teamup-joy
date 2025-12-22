@@ -337,6 +337,23 @@ const Friends = () => {
                       >
                         <User className="h-4 w-4" />
                       </Button>
+                      <Button 
+                        size="sm" 
+                        variant="ghost"
+                        className="text-destructive hover:text-destructive hover:bg-destructive/10"
+                        onClick={async () => {
+                          if (!confirm(`Remove ${friend.profile?.username} from friends?`)) return;
+                          await supabase.from('friends').delete().eq('id', friend.id);
+                          // Also delete reciprocal friendship
+                          await supabase.from('friends').delete()
+                            .eq('user_id', friend.profile?.user_id)
+                            .eq('friend_id', user?.id);
+                          toast.success('Friend removed');
+                          fetchData();
+                        }}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
                     </div>
                   </div>
                 ))}
