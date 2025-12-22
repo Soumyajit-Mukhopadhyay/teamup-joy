@@ -206,6 +206,19 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "leave_all_teams_globally",
+      description:
+        "Leave ALL teams from ALL hackathons. First lists all teams the user is in, then asks for confirmation before leaving each one. Use this when user says 'leave all my teams' without specifying a hackathon. REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {},
+        required: [],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "delete_team",
       description:
         "Delete a team. Only the team creator/leader can delete a team. REQUIRES USER CONFIRMATION.",
@@ -479,6 +492,7 @@ const CONFIRMATION_REQUIRED_ACTIONS = [
   "create_team",
   "leave_team",
   "leave_all_teams_for_hackathon",
+  "leave_all_teams_globally",
   "delete_team",
   "invite_to_team",
   "submit_hackathon",
@@ -570,7 +584,36 @@ function classifyRequestType(toolCalls: any[]): string {
   return 'single_task';
 }
 
+// Check if a task is complex enough to learn from
+function isComplexTask(
+  toolCalls: any[] | null,
+  userMessage: string,
+  conversationTurnCount: number = 1
+): boolean {
+  const toolCount = toolCalls?.length || 0;
+  
+  // RULE 1: Multi-task (3+ tools) is always worth learning
+  if (toolCount >= 3) return true;
+  
+  // RULE 2: Multi-turn conversations (user had to clarify/correct AI)
+  if (conversationTurnCount >= 3) return true;
+  
+  // RULE 3: Long, detailed user requests (100+ chars with multiple action words)
+  const actionWords = ['create', 'add', 'remove', 'delete', 'leave', 'join', 'send', 'accept', 
+                       'invite', 'search', 'find', 'open', 'share', 'navigate', 'and', 'then', 'also'];
+  const foundActions = actionWords.filter(word => userMessage.toLowerCase().includes(word));
+  if (userMessage.length >= 100 && foundActions.length >= 3) return true;
+  
+  // RULE 4: Compound requests with "and", "then", "also"
+  const compoundWords = ['and then', 'and also', 'then also', 'after that'];
+  if (compoundWords.some(w => userMessage.toLowerCase().includes(w))) return true;
+  
+  // Simple single-task requests are NOT worth learning (avoid noise)
+  return false;
+}
+
 // Record interaction for learning feedback with enhanced pattern tracking
+// ONLY learns from complex multi-task or multi-turn conversations
 async function recordLearningFeedback(
   supabase: any,
   userMessage: string,
@@ -578,7 +621,9 @@ async function recordLearningFeedback(
   toolCalls: any[] | null,
   wasSuccessful: boolean | null,
   executionTimeMs?: number,
-  isMultiTask: boolean = false
+  isMultiTask: boolean = false,
+  conversationTurnCount: number = 1,
+  userFeedback?: string
 ): Promise<void> {
   try {
     const toolSequence = toolCalls?.map(t => t.name || t.function?.name).filter(Boolean) || [];
@@ -590,21 +635,26 @@ async function recordLearningFeedback(
       return;
     }
     
-    // Record the feedback
+    // COMPLEXITY CHECK: Only store feedback for complex tasks
+    const isComplex = isComplexTask(toolCalls, userMessage, conversationTurnCount);
+    
+    // Always record feedback for tracking (but won't learn from simple tasks)
     await supabase.from("ai_learning_feedback").insert({
       user_message: userMessage.slice(0, 2000),
       ai_response: aiResponse.slice(0, 2000),
       tool_calls: toolCalls,
       was_successful: wasSuccessful,
       tool_sequence: toolSequence,
-      request_type: requestType,
+      request_type: isComplex ? requestType : 'simple_ignored',
       multi_task_count: toolSequence.length,
       execution_time_ms: executionTimeMs,
       pattern_hash: patternHash,
+      feedback_notes: userFeedback || null,
     });
     
-    // If successful, update or create learned pattern with quality controls
-    if (wasSuccessful && toolSequence.length > 0) {
+    // ONLY learn patterns from complex successful tasks
+    if (wasSuccessful && toolSequence.length > 0 && isComplex) {
+      console.log(`Learning from complex task: ${toolSequence.length} tools, ${conversationTurnCount} turns`);
       await updateLearnedPattern(
         supabase, 
         patternHash, 
@@ -613,6 +663,8 @@ async function recordLearningFeedback(
         toolSequence,
         isMultiTask
       );
+    } else if (!isComplex && toolSequence.length > 0) {
+      console.log(`Skipping simple task learning: "${userMessage.slice(0, 50)}..."`);
     }
   } catch (e) {
     console.error("Failed to record learning feedback:", e);
@@ -1685,6 +1737,130 @@ async function executeToolCall(
             .map((t: any) => t.name)
             .join(", ")}`,
           left_teams: matching.map((t: any) => ({ name: t.name })),
+        },
+      };
+    }
+
+    case "leave_all_teams_globally": {
+      // Get all teams user is a member of
+      const { data: memberships, error: memErr } = await supabase
+        .from("team_members")
+        .select("team_id")
+        .eq("user_id", userId);
+
+      if (memErr) return { result: { error: memErr.message } };
+      if (!memberships?.length) {
+        return { result: { message: "You are not a member of any teams." } };
+      }
+
+      const teamIds = memberships.map((m: any) => m.team_id);
+
+      // Get team details with hackathon info
+      const { data: teams } = await supabase
+        .from("teams")
+        .select("id, name, hackathon_id, created_by")
+        .in("id", teamIds);
+
+      if (!teams?.length) {
+        return { result: { message: "You are not a member of any teams." } };
+      }
+
+      // Get hackathon names for better display
+      const hackathonSlugs = [...new Set(teams.map((t: any) => t.hackathon_id as string))];
+      const { data: hackathons } = await supabase
+        .from("hackathons")
+        .select("slug, name")
+        .in("slug", hackathonSlugs);
+
+      const hackathonMap = new Map((hackathons || []).map((h: any) => [h.slug, h.name]));
+
+      // Build detailed team list
+      const teamList = teams.map((t: any) => ({
+        name: t.name,
+        hackathon: hackathonMap.get(t.hackathon_id) || t.hackathon_id,
+        isLeader: t.created_by === userId,
+      }));
+
+      if (!pendingConfirmation) {
+        const teamListStr = teamList
+          .map((t: any) => `• "${t.name}" in ${t.hackathon}${t.isLeader ? " (you're the leader)" : ""}`)
+          .join("\n");
+        
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `You are about to leave ALL ${teams.length} team(s) across all hackathons:\n\n${teamListStr}\n\nThis action cannot be undone. Are you sure you want to leave ALL these teams?`,
+        };
+      }
+
+      // Leave all teams - handle leader transfer or team deletion
+      const leftTeams: string[] = [];
+      const errors: string[] = [];
+
+      for (const team of teams) {
+        if (team.created_by === userId) {
+          // User is the creator - check if there are other members
+          const { data: otherMembers } = await supabase
+            .from("team_members")
+            .select("user_id")
+            .eq("team_id", team.id)
+            .neq("user_id", userId)
+            .limit(1);
+
+          if (otherMembers?.length) {
+            // Transfer leadership to first other member
+            const newLeaderId = otherMembers[0].user_id;
+            await supabase.from("teams").update({ created_by: newLeaderId }).eq("id", team.id);
+            await supabase.from("team_members").update({ is_leader: true, role: 'leader' }).eq("team_id", team.id).eq("user_id", newLeaderId);
+          }
+        }
+
+        // Remove user from team
+        const { error: leaveErr } = await supabase
+          .from("team_members")
+          .delete()
+          .eq("team_id", team.id)
+          .eq("user_id", userId);
+
+        if (leaveErr) {
+          errors.push(`Failed to leave "${team.name}": ${leaveErr.message}`);
+        } else {
+          leftTeams.push(team.name);
+        }
+
+        // Clean up participation if no teams left for this hackathon
+        const { data: remainingTeams } = await supabase
+          .from("team_members")
+          .select("team_id")
+          .eq("user_id", userId);
+
+        if (remainingTeams) {
+          const remainingTeamIds = remainingTeams.map((r: any) => r.team_id);
+          const { data: teamsInHackathon } = await supabase
+            .from("teams")
+            .select("id")
+            .eq("hackathon_id", team.hackathon_id)
+            .in("id", remainingTeamIds);
+
+          if (!teamsInHackathon?.length) {
+            await supabase
+              .from("hackathon_participations")
+              .delete()
+              .eq("user_id", userId)
+              .eq("hackathon_id", team.hackathon_id);
+          }
+        }
+      }
+
+      return {
+        result: {
+          success: true,
+          action_type: "leave_all_teams_globally",
+          message: errors.length
+            ? `Left ${leftTeams.length} team(s). Errors: ${errors.join("; ")}`
+            : `Successfully left all ${leftTeams.length} team(s): ${leftTeams.join(", ")}`,
+          left_teams: leftTeams,
+          errors: errors.length ? errors : undefined,
         },
       };
     }

@@ -1,11 +1,11 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Users, UserPlus, Eye, EyeOff, Globe, UserCheck } from 'lucide-react';
+import { Users, UserPlus, Globe, UserCheck } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
@@ -34,110 +34,133 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
   const [loading, setLoading] = useState(true);
   const [requestingTeamId, setRequestingTeamId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!user || !hackathonSlug) return;
-    fetchTeamsLookingForMembers();
+  const fetchTeamsLookingForMembers = useCallback(async () => {
+    if (!user || !hackathonSlug) {
+      setLoading(false);
+      return;
+    }
+
+    try {
+      // Fetch teams looking for teammates for this hackathon
+      const { data: teamsData, error } = await supabase
+        .from('teams')
+        .select('id, name, hackathon_id, looking_visibility, created_by')
+        .eq('hackathon_id', hackathonSlug)
+        .eq('looking_for_teammates', true);
+
+      if (error) {
+        console.error('Error fetching teams:', error);
+        setAnyoneTeams([]);
+        setFriendsTeams([]);
+        setLoading(false);
+        return;
+      }
+
+      if (!teamsData || teamsData.length === 0) {
+        setAnyoneTeams([]);
+        setFriendsTeams([]);
+        setLoading(false);
+        return;
+      }
+
+      // Get user's friends for visibility filtering
+      const { data: friendsData } = await supabase
+        .from('friends')
+        .select('friend_id, user_id')
+        .or(`user_id.eq.${user.id},friend_id.eq.${user.id}`);
+
+      const friendIds = new Set(
+        (friendsData || []).map(f => f.user_id === user.id ? f.friend_id : f.user_id)
+      );
+
+      // Filter teams based on visibility
+      const visibleTeams = teamsData.filter(team => {
+        if (team.created_by === user.id) return false; // Don't show own teams
+        if (team.looking_visibility === 'anyone') return true;
+        if (team.looking_visibility === 'friends_only') {
+          return friendIds.has(team.created_by);
+        }
+        return false;
+      });
+
+      if (visibleTeams.length === 0) {
+        setAnyoneTeams([]);
+        setFriendsTeams([]);
+        setLoading(false);
+        return;
+      }
+
+      // Get team leaders' profiles
+      const leaderIds = visibleTeams.map(t => t.created_by);
+      const { data: profiles } = await supabase
+        .from('profiles')
+        .select('user_id, username, userid')
+        .in('user_id', leaderIds);
+
+      // Get member counts
+      const teamIds = visibleTeams.map(t => t.id);
+      const { data: memberships } = await supabase
+        .from('team_members')
+        .select('team_id')
+        .in('team_id', teamIds);
+
+      const memberCounts: Record<string, number> = {};
+      (memberships || []).forEach(m => {
+        memberCounts[m.team_id] = (memberCounts[m.team_id] || 0) + 1;
+      });
+
+      // Check if user already requested to join these teams
+      const { data: existingRequests } = await supabase
+        .from('team_requests')
+        .select('team_id')
+        .eq('from_user_id', user.id)
+        .eq('status', 'pending')
+        .in('team_id', teamIds);
+
+      const requestedTeamIds = new Set((existingRequests || []).map(r => r.team_id));
+
+      // Check if user is already a member of any team
+      const { data: userMemberships } = await supabase
+        .from('team_members')
+        .select('team_id')
+        .eq('user_id', user.id)
+        .in('team_id', teamIds);
+
+      const memberTeamIds = new Set((userMemberships || []).map(m => m.team_id));
+
+      const enrichedTeams: TeamLookingForMembers[] = visibleTeams
+        .filter(t => !memberTeamIds.has(t.id))
+        .map(team => ({
+          id: team.id,
+          name: team.name,
+          hackathon_id: team.hackathon_id,
+          looking_visibility: team.looking_visibility,
+          leader_profile: profiles?.find(p => p.user_id === team.created_by),
+          member_count: memberCounts[team.id] || 1,
+          already_requested: requestedTeamIds.has(team.id),
+        }));
+
+      // Separate into two lists
+      setAnyoneTeams(enrichedTeams.filter(t => t.looking_visibility === 'anyone'));
+      setFriendsTeams(enrichedTeams.filter(t => t.looking_visibility === 'friends_only'));
+    } catch (err) {
+      console.error('Unexpected error:', err);
+      setAnyoneTeams([]);
+      setFriendsTeams([]);
+    } finally {
+      setLoading(false);
+    }
   }, [user, hackathonSlug]);
 
-  const fetchTeamsLookingForMembers = async () => {
-    if (!user) return;
-
-    // Fetch teams looking for teammates for this hackathon
-    const { data: teamsData, error } = await supabase
-      .from('teams')
-      .select('id, name, hackathon_id, looking_visibility, created_by')
-      .eq('hackathon_id', hackathonSlug)
-      .eq('looking_for_teammates', true);
-
-    if (error || !teamsData) {
-      setAnyoneTeams([]);
-      setFriendsTeams([]);
+  useEffect(() => {
+    if (!user || !hackathonSlug) {
       setLoading(false);
       return;
     }
-
-    // Get user's friends for visibility filtering
-    const { data: friendsData } = await supabase
-      .from('friends')
-      .select('friend_id, user_id')
-      .or(`user_id.eq.${user.id},friend_id.eq.${user.id}`);
-
-    const friendIds = new Set(
-      (friendsData || []).map(f => f.user_id === user.id ? f.friend_id : f.user_id)
-    );
-
-    // Filter teams based on visibility
-    const visibleTeams = teamsData.filter(team => {
-      if (team.created_by === user.id) return false; // Don't show own teams
-      if (team.looking_visibility === 'anyone') return true;
-      if (team.looking_visibility === 'friends_only') {
-        return friendIds.has(team.created_by);
-      }
-      return false;
-    });
-
-    if (visibleTeams.length === 0) {
-      setAnyoneTeams([]);
-      setFriendsTeams([]);
-      setLoading(false);
-      return;
-    }
-
-    // Get team leaders' profiles
-    const leaderIds = visibleTeams.map(t => t.created_by);
-    const { data: profiles } = await supabase
-      .from('profiles')
-      .select('user_id, username, userid')
-      .in('user_id', leaderIds);
-
-    // Get member counts
-    const teamIds = visibleTeams.map(t => t.id);
-    const { data: memberships } = await supabase
-      .from('team_members')
-      .select('team_id')
-      .in('team_id', teamIds);
-
-    const memberCounts: Record<string, number> = {};
-    (memberships || []).forEach(m => {
-      memberCounts[m.team_id] = (memberCounts[m.team_id] || 0) + 1;
-    });
-
-    // Check if user already requested to join these teams
-    const { data: existingRequests } = await supabase
-      .from('team_requests')
-      .select('team_id')
-      .eq('from_user_id', user.id)
-      .eq('status', 'pending')
-      .in('team_id', teamIds);
-
-    const requestedTeamIds = new Set((existingRequests || []).map(r => r.team_id));
-
-    // Check if user is already a member of any team
-    const { data: userMemberships } = await supabase
-      .from('team_members')
-      .select('team_id')
-      .eq('user_id', user.id)
-      .in('team_id', teamIds);
-
-    const memberTeamIds = new Set((userMemberships || []).map(m => m.team_id));
-
-    const enrichedTeams: TeamLookingForMembers[] = visibleTeams
-      .filter(t => !memberTeamIds.has(t.id)) // Filter out teams user is already in
-      .map(team => ({
-        id: team.id,
-        name: team.name,
-        hackathon_id: team.hackathon_id,
-        looking_visibility: team.looking_visibility,
-        leader_profile: profiles?.find(p => p.user_id === team.created_by),
-        member_count: memberCounts[team.id] || 1,
-        already_requested: requestedTeamIds.has(team.id),
-      }));
-
-    // Separate into two lists
-    setAnyoneTeams(enrichedTeams.filter(t => t.looking_visibility === 'anyone'));
-    setFriendsTeams(enrichedTeams.filter(t => t.looking_visibility === 'friends_only'));
-    setLoading(false);
-  };
+    
+    setLoading(true);
+    fetchTeamsLookingForMembers();
+  }, [user?.id, hackathonSlug, fetchTeamsLookingForMembers]);
 
   const requestToJoin = async (team: TeamLookingForMembers) => {
     if (!user || !team.leader_profile) return;
@@ -145,7 +168,6 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
     setRequestingTeamId(team.id);
 
     try {
-      // Check if request already exists
       const { data: existing } = await supabase
         .from('team_requests')
         .select('id, status')
@@ -158,7 +180,6 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
           toast.error('Request already pending');
           return;
         }
-        // Update existing request
         await supabase
           .from('team_requests')
           .update({ status: 'pending', updated_at: new Date().toISOString() })
@@ -176,7 +197,6 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
 
       toast.success(`Request sent to join "${team.name}"`);
       
-      // Update both lists
       const updateTeam = (t: TeamLookingForMembers) => 
         t.id === team.id ? { ...t, already_requested: true } : t;
       setAnyoneTeams(prev => prev.map(updateTeam));
@@ -245,7 +265,7 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
   const totalTeams = anyoneTeams.length + friendsTeams.length;
 
   if (totalTeams === 0) {
-    return null; // Don't show section if no teams are looking
+    return null;
   }
 
   return (
