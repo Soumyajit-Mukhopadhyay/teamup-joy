@@ -197,6 +197,29 @@ const Teams = () => {
     setLeavingTeam(true);
 
     try {
+      // Get all team members to check if we need to transfer leadership
+      const { data: members } = await supabase
+        .from('team_members')
+        .select('id, user_id, is_leader, role, joined_at')
+        .eq('team_id', selectedTeam.id)
+        .order('joined_at', { ascending: true });
+
+      const isLeader = selectedTeam.is_leader;
+      const otherMembers = (members || []).filter(m => m.user_id !== user.id);
+
+      // If current user is leader and there are other members, transfer leadership
+      if (isLeader && otherMembers.length > 0) {
+        // Pick the first member who joined (already sorted by joined_at)
+        const newLeader = otherMembers[0];
+        
+        await supabase
+          .from('team_members')
+          .update({ is_leader: true, role: 'leader' })
+          .eq('id', newLeader.id);
+
+        toast.info(`Leadership transferred to another team member`);
+      }
+
       // Remove from team_members
       const { error } = await supabase
         .from('team_members')
