@@ -1263,19 +1263,32 @@ async function executeToolCall(
       }
 
       const hackathon = resolved.match;
+      const teamNameTrimmed = String(args.team_name || "").trim();
+
+      // Check if team with same name already exists for this hackathon
+      const { data: existingTeam } = await supabase
+        .from("teams")
+        .select("id, name")
+        .eq("hackathon_id", hackathon.slug)
+        .ilike("name", teamNameTrimmed)
+        .maybeSingle();
+
+      if (existingTeam) {
+        return { result: { error: `A team named "${teamNameTrimmed}" already exists for "${hackathon.name}". Please choose a different name.` } };
+      }
 
       if (!pendingConfirmation) {
         return {
           result: null,
           needsConfirmation: true,
-          confirmationMessage: `I'll create a team called "${args.team_name}" for "${hackathon.name}". Should I proceed?`,
+          confirmationMessage: `I'll create a team called "${teamNameTrimmed}" for "${hackathon.name}". Should I proceed?`,
         };
       }
 
       const { data: team, error: teamError } = await supabase
         .from("teams")
         .insert({
-          name: args.team_name,
+          name: teamNameTrimmed,
           hackathon_id: hackathon.slug,
           created_by: userId,
         })
@@ -1300,7 +1313,7 @@ async function executeToolCall(
       return {
         result: {
           success: true,
-          message: `Team "${args.team_name}" created for ${hackathon.name}. You are now participating in this hackathon!`,
+          message: `Team "${teamNameTrimmed}" created for ${hackathon.name}. You are now participating in this hackathon!`,
           team_id: team.id,
           hackathon_slug: hackathon.slug,
         },
@@ -1323,27 +1336,38 @@ async function executeToolCall(
 
       const team = teamRes.match;
 
-      // Check if user is the only member
+      // Check if user is the only member and get member details
       const { data: members } = await supabase
         .from("team_members")
-        .select("user_id, is_leader")
-        .eq("team_id", team.id);
+        .select("id, user_id, is_leader, role, joined_at")
+        .eq("team_id", team.id)
+        .order("joined_at", { ascending: true });
 
       const isOnlyMember = members?.length === 1;
-      const isLeader = members?.some((m: any) => m.user_id === userId && m.is_leader) || team.created_by === userId;
+      const isLeader = members?.some((m: any) => m.user_id === userId && (m.is_leader || m.role === 'leader')) || team.created_by === userId;
+      const otherMembers = (members || []).filter((m: any) => m.user_id !== userId);
 
       if (!pendingConfirmation) {
         let message = `I'll remove you from team "${team.name}".`;
         if (isOnlyMember) {
           message = `You are the only member of team "${team.name}". Leaving will effectively abandon the team.`;
-        } else if (isLeader) {
-          message = `You are the leader of team "${team.name}". Leaving will remove you but the team will remain. Consider transferring leadership or deleting the team instead.`;
+        } else if (isLeader && otherMembers.length > 0) {
+          message = `You are the leader of team "${team.name}". Leadership will be transferred to the next member who joined first.`;
         }
         return {
           result: null,
           needsConfirmation: true,
           confirmationMessage: `${message} Should I proceed?`,
         };
+      }
+
+      // If leader and there are other members, transfer leadership
+      if (isLeader && otherMembers.length > 0) {
+        const newLeader = otherMembers[0]; // First member who joined (already sorted)
+        await supabase
+          .from("team_members")
+          .update({ is_leader: true, role: "leader" })
+          .eq("id", newLeader.id);
       }
 
       // Remove the user from team
@@ -1355,10 +1379,15 @@ async function executeToolCall(
 
       if (error) return { result: { error: error.message } };
 
+      let successMessage = `You have left team "${team.name}"`;
+      if (isLeader && otherMembers.length > 0) {
+        successMessage += ". Leadership has been transferred to another member.";
+      }
+
       return {
         result: {
           success: true,
-          message: `You have left team "${team.name}"`,
+          message: successMessage,
         },
       };
     }
@@ -1538,6 +1567,33 @@ async function executeToolCall(
           result: null,
           needsConfirmation: true,
           confirmationMessage: `I'll send a team invitation to ${target.username} (@${target.userid}) for team "${team.name}". Should I proceed?`,
+        };
+      }
+
+      // Check if request already exists for this user and team
+      const { data: existingRequest } = await supabase
+        .from("team_requests")
+        .select("id, status")
+        .eq("team_id", team.id)
+        .eq("to_user_id", target.user_id)
+        .maybeSingle();
+
+      if (existingRequest) {
+        if (existingRequest.status === "pending") {
+          return { result: { error: `Invitation already pending for ${target.username} (@${target.userid})` } };
+        }
+        // Update existing request back to pending
+        const { error } = await supabase
+          .from("team_requests")
+          .update({ status: "pending", updated_at: new Date().toISOString() })
+          .eq("id", existingRequest.id);
+
+        if (error) return { result: { error: error.message } };
+        return {
+          result: {
+            success: true,
+            message: `Team invitation sent to ${target.username} (@${target.userid})`,
+          },
         };
       }
 

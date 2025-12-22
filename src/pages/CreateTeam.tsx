@@ -141,11 +141,25 @@ const CreateTeam = () => {
     const hackathonIdentifier = hackathon.slug;
 
     try {
+      // Check if team with same name already exists for this hackathon
+      const { data: existingTeam } = await supabase
+        .from('teams')
+        .select('id')
+        .eq('hackathon_id', hackathonIdentifier)
+        .ilike('name', teamName.trim())
+        .maybeSingle();
+
+      if (existingTeam) {
+        toast.error(`A team named "${teamName}" already exists for this hackathon`);
+        setLoading(false);
+        return;
+      }
+
       // Create the team
       const { data: team, error: teamError } = await supabase
         .from('teams')
         .insert({
-          name: teamName,
+          name: teamName.trim(),
           hackathon_id: hackathonIdentifier,
           created_by: user.id,
           looking_for_teammates: lookingForTeammates,
@@ -171,20 +185,26 @@ const CreateTeam = () => {
       // Add hackathon participation for creator
       await addHackathonParticipation(user.id, hackathonIdentifier);
 
-      // Send team requests to selected members
+      // Send team requests to selected members (only if not already pending)
       if (selectedMembers.length > 0) {
-        const requests = selectedMembers.map(member => ({
-          team_id: team.id,
-          from_user_id: user.id,
-          to_user_id: member.user_id,
-          status: 'pending',
-        }));
+        for (const member of selectedMembers) {
+          const { data: existing } = await supabase
+            .from('team_requests')
+            .select('id')
+            .eq('team_id', team.id)
+            .eq('to_user_id', member.user_id)
+            .eq('status', 'pending')
+            .maybeSingle();
 
-        const { error: requestError } = await supabase
-          .from('team_requests')
-          .insert(requests);
-
-        if (requestError) throw requestError;
+          if (!existing) {
+            await supabase.from('team_requests').insert({
+              team_id: team.id,
+              from_user_id: user.id,
+              to_user_id: member.user_id,
+              status: 'pending',
+            });
+          }
+        }
       }
 
       toast.success('Team created successfully!');

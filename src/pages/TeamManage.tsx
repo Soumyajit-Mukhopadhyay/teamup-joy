@@ -160,16 +160,38 @@ const TeamManage = () => {
     if (!user || !teamId) return;
 
     try {
-      const { error } = await supabase
+      // Check if request already exists for this user and team
+      const { data: existingRequest } = await supabase
         .from('team_requests')
-        .insert({
-          team_id: teamId,
-          from_user_id: user.id,
-          to_user_id: member.user_id,
-          status: 'pending',
-        });
+        .select('id, status')
+        .eq('team_id', teamId)
+        .eq('to_user_id', member.user_id)
+        .maybeSingle();
 
-      if (error) throw error;
+      if (existingRequest) {
+        if (existingRequest.status === 'pending') {
+          toast.error(`Invitation already pending for @${member.userid}`);
+          return;
+        }
+        // Update existing request back to pending
+        const { error } = await supabase
+          .from('team_requests')
+          .update({ status: 'pending', updated_at: new Date().toISOString() })
+          .eq('id', existingRequest.id);
+        
+        if (error) throw error;
+      } else {
+        const { error } = await supabase
+          .from('team_requests')
+          .insert({
+            team_id: teamId,
+            from_user_id: user.id,
+            to_user_id: member.user_id,
+            status: 'pending',
+          });
+
+        if (error) throw error;
+      }
 
       toast.success(`Invitation sent to @${member.userid}`);
       setSearchResults(prev => prev.filter(r => r.user_id !== member.user_id));

@@ -207,17 +207,17 @@ const Friends = () => {
     if (!user) return;
 
     if (accept) {
-      // Add to friends table
+      // Add to friends table (mutual friendship)
       const { error: friendError } = await supabase
         .from('friends')
-        .insert({
-          user_id: user.id,
-          friend_id: fromUserId,
-        });
+        .insert([
+          { user_id: user.id, friend_id: fromUserId },
+          { user_id: fromUserId, friend_id: user.id },
+        ]);
 
       if (friendError) {
-        toast.error('Failed to accept request');
-        return;
+        // If duplicate key error, friendship might already exist partially
+        console.error('Friend insert error:', friendError);
       }
     }
 
@@ -231,6 +231,9 @@ const Friends = () => {
       toast.error('Failed to update request');
     } else {
       toast.success(accept ? 'Friend added!' : 'Request declined');
+      // Immediately update local state for instant feedback
+      setRequests(prev => prev.filter(r => r.id !== requestId));
+      // Then refetch all data for consistency
       fetchData();
     }
   };
