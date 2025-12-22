@@ -1957,27 +1957,55 @@ HACKATHON LINK HANDLING:
       );
     }
 
-    // Call AI with tools
-    const aiResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${LOVABLE_API_KEY}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+    // Call AI with tools - with retry logic for rate limits
+    const callAIWithRetry = async (body: any, maxRetries = 3): Promise<Response> => {
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${LOVABLE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+
+        if (response.ok) {
+          return response;
+        }
+
+        if (response.status === 429) {
+          const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 500; // Exponential backoff with jitter
+          console.log(`Rate limited, retrying in ${waitTime}ms (attempt ${attempt + 1}/${maxRetries})`);
+          
+          if (attempt < maxRetries - 1) {
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+            continue;
+          }
+        }
+
+        // For non-429 errors or final 429 failure, throw
+        const errorText = await response.text();
+        console.error("AI API error:", response.status, errorText);
+        
+        if (response.status === 429) {
+          throw new Error("RATE_LIMITED");
+        }
+        throw new Error("AI service error");
+      }
+      throw new Error("Max retries exceeded");
+    };
+
+    let aiResponse: Response;
+    try {
+      aiResponse = await callAIWithRetry({
         model: "google/gemini-2.5-flash",
         messages,
         tools,
         tool_choice: "auto",
-        stream: false, // First call is non-streaming to handle tool calls
-      }),
-    });
-
-    if (!aiResponse.ok) {
-      const errorText = await aiResponse.text();
-      console.error("AI API error:", aiResponse.status, errorText);
-
-      if (aiResponse.status === 429) {
+        stream: false,
+      });
+    } catch (error) {
+      if (error instanceof Error && error.message === "RATE_LIMITED") {
         return new Response(
           JSON.stringify({
             error: "I'm receiving too many requests right now. Please try again in a moment.",
@@ -1985,8 +2013,7 @@ HACKATHON LINK HANDLING:
           { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
       }
-
-      throw new Error("AI service error");
+      throw error;
     }
 
     const aiData = await aiResponse.json();
@@ -2081,16 +2108,9 @@ HACKATHON LINK HANDLING:
         // Fall through to non-streaming response below
       }
 
-      const summaryResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "google/gemini-2.5-flash",
-          messages: summaryMessages,
-        }),
+      const summaryResponse = await callAIWithRetry({
+        model: "google/gemini-2.5-flash",
+        messages: summaryMessages,
       });
 
       const summaryData = await summaryResponse.json();
