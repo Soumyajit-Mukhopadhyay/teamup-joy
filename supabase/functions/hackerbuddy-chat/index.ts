@@ -904,6 +904,8 @@ async function executeToolCall(
         };
       }
 
+      const detailsPage = `https://hackerbuddy.lovable.app/hackathon/${res.match.slug}`;
+
       return {
         result: {
           name: res.match.name,
@@ -911,7 +913,11 @@ async function executeToolCall(
           url: res.match.url || null,
           message: res.match.url
             ? `Official link for ${res.match.name}: ${res.match.url}`
-            : `I don't have an official link saved for ${res.match.name}.`,
+            : `I don't have an official link saved for ${res.match.name}. Opening the hackathon page instead.`,
+          action: {
+            type: "open_link",
+            url: res.match.url || detailsPage,
+          },
         },
       };
     }
@@ -2079,11 +2085,36 @@ async function executeToolCall(
     case "navigate_to_page": {
       const path = args.path || "/";
       const description = args.description || "";
-      
+
+      // Guardrail: never "navigate" to a hackathon page that doesn't exist in the database.
+      // This prevents hallucinated slugs like /hackathon/some-random-name.
+      const hackathonMatch = String(path).match(/^\/hackathon\/([^/]+)$/);
+      if (hackathonMatch) {
+        const slug = hackathonMatch[1];
+        const { data: h } = await supabase
+          .from("hackathons")
+          .select("slug")
+          .eq("status", "approved")
+          .eq("slug", slug)
+          .maybeSingle();
+
+        if (!h) {
+          return {
+            result: {
+              success: false,
+              action_type: "navigate_to_page",
+              path,
+              description,
+              message: `❌ Hackathon page not found for slug: ${slug}. Please search first (I won't guess).`,
+            },
+          };
+        }
+      }
+
       // Build full URL for navigation
       const baseUrl = "https://hackerbuddy.lovable.app";
       const fullUrl = path.startsWith("http") ? path : `${baseUrl}${path}`;
-      
+
       return {
         result: {
           success: true,
@@ -2352,7 +2383,11 @@ BEHAVIORAL RULES
 5. Never invent data - if missing, say so
 6. Be CONCISE and action-oriented
 7. DATABASE-FIRST: For friends/teams/requests state, ALWAYS call get_user_friends / get_user_teams / get_pending_requests first. Do NOT rely on chat memory.
-8. HACKATHON QUICK ACTIONS: For "open website", "add to calendar", or "share link", ALWAYS call the relevant tool and only then respond.
+8. HACKATHON QUICK ACTIONS:
+   - "open website" / "open link" → MUST call visit_hackathon_website
+   - "add to calendar" → MUST call get_hackathon_calendar_link
+   - "share/copy link" → MUST call get_hackathon_link (or get_hackathon_share_link)
+   Never say "completed" unless the tool actually returned an action.
 9. IMPORTANT: Do NOT paste long URLs (especially calendar links). Say "ready" and rely on the action buttons (Open / Copy) in the chat UI.
 10. "Leave all my teams in hackathon X" MUST use leave_all_teams_for_hackathon (single tool call).
 11. NAVIGATION HELP: When user asks where something is, explain AND offer to navigate them there.
