@@ -2111,20 +2111,30 @@ async function executeToolCall(
         }
       }
 
+      // Check if user wants calendar view - append query param
+      const lowerDesc = description.toLowerCase();
+      let finalPath = path;
+      if (
+        path === "/" &&
+        (lowerDesc.includes("calendar") || lowerDesc.includes("calender"))
+      ) {
+        finalPath = "/?view=calendar";
+      }
+
       // Build full URL for navigation
       const baseUrl = "https://hackerbuddy.lovable.app";
-      const fullUrl = path.startsWith("http") ? path : `${baseUrl}${path}`;
+      const fullUrl = finalPath.startsWith("http") ? finalPath : `${baseUrl}${finalPath}`;
 
       return {
         result: {
           success: true,
           action_type: "navigate_to_page",
-          path,
+          path: finalPath,
           description,
-          message: `📍 Navigate to: ${path}${description ? ` - ${description}` : ""}`,
+          message: `📍 Navigate to: ${finalPath}${description ? ` - ${description}` : ""}`,
           action: {
             type: "navigate",
-            path: path,
+            path: finalPath,
             url: fullUrl,
           },
         },
@@ -2420,7 +2430,7 @@ You CAN submit hackathons for admin approval. Required fields:
 Optional: description, url, organizer
 
 ═══════════════════════════════════════════════════════════════
-EXAMPLES WITH CORRECT TOOL COUNTS
+EXAMPLES WITH CORRECT TOOL COUNTS (CRITICAL - FOLLOW EXACTLY)
 ═══════════════════════════════════════════════════════════════
 
 Example 1 - "Create team1 and team2 for L'Oréal Brandstorm"
@@ -2433,15 +2443,29 @@ Example 2 - "Create teams team3 and team4 for L'Oréal and add hackathon unstopD
   - Task 3: submit_hackathon(name="unstopDummy", ...) - BUT need dates/location first!
 → ASK: "I need start date, end date, location, and region for 'unstopDummy'"
 
-Example 3 - "Remove friend X and send new request"
+Example 3 - "Create team1 team3 in hackathonX, remove friend Y, and add hackathon dummy7"
+→ 4 TASKS:
+  - Task 1: create_team(name="team1", hackathon_query="hackathonX")
+  - Task 2: create_team(name="team3", hackathon_query="hackathonX")
+  - Task 3: remove_friend(user="Y")
+  - Task 4: submit_hackathon(name="dummy7", ...) - need dates/location first!
+→ NEVER assume max 3 tasks. Count EVERY distinct action!
+
+Example 4 - "Remove friend X and send new request"
 → 2 TASKS → Call remove_friend, then send_friend_request
 
-Example 4 - "Send friend request to John"
+Example 5 - "Send friend request to John"
 → 1 TASK → Call send_friend_request ONCE only
 
-Example 5 - "Where is the friends page?"
+Example 6 - "Where is the friends page?"
 → Tell them: "The Friends page is at /friends. You can also find it in the navigation bar at the top. Would you like me to take you there?"
-→ If they say yes, use navigate_to_page(path="/friends")`;
+→ If they say yes, use navigate_to_page(path="/friends")
+
+Example 7 - "Show me the calendar view" / "Take me to calendar"
+→ Use navigate_to_page(path="/", description="Calendar view") and tell them to click the Calendar button in the top-right of the hackathon listings to switch to calendar view.
+→ The home page has a Grid/Calendar toggle button.
+
+CRITICAL RULE: There is NO maximum number of tasks. If user says "perform 4 tasks" or lists 5 actions, detect and execute ALL of them. Never cap at 3!`;
 
     // Inject learned patterns into system prompt
     const learnedPatterns = await getLearnedPatterns(supabase);
