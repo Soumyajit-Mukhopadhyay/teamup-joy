@@ -705,6 +705,80 @@ async function executeToolCall(
   }
 }
 
+// Helper: get or create conversation summary
+async function getConversationSummary(
+  supabase: any,
+  userId: string
+): Promise<{ summary: string; messageCount: number } | null> {
+  const { data } = await supabase
+    .from("ai_conversation_summaries")
+    .select("summary, message_count")
+    .eq("user_id", userId)
+    .maybeSingle();
+
+  return data ? { summary: data.summary, messageCount: data.message_count } : null;
+}
+
+// Helper: update conversation summary (called periodically)
+async function updateConversationSummary(
+  supabase: any,
+  userId: string,
+  messages: { role: string; content: string }[],
+  apiKey: string
+): Promise<void> {
+  if (messages.length < 10) return; // need enough context to summarize
+
+  const existing = await getConversationSummary(supabase, userId);
+
+  // Summarize last 20 messages into a rolling summary
+  const toSummarize = messages.slice(-20);
+  const prompt = existing
+    ? `Previous summary:\n${existing.summary}\n\nNew messages:\n${toSummarize
+        .map((m) => `${m.role}: ${m.content}`)
+        .join("\n")}\n\nCreate a concise, updated summary (max 400 words) of the full conversation so far, focusing on key facts, user preferences, and context needed for future assistance.`
+    : `Summarize this conversation (max 400 words), focusing on key facts, user preferences, and context needed for future assistance:\n${toSummarize
+        .map((m) => `${m.role}: ${m.content}`)
+        .join("\n")}`;
+
+  try {
+    const resp = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash-lite",
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    if (!resp.ok) return;
+
+    const data = await resp.json();
+    const summary = data.choices?.[0]?.message?.content || "";
+
+    if (!summary) return;
+
+    const newCount = (existing?.messageCount || 0) + toSummarize.length;
+
+    await supabase.from("ai_conversation_summaries").upsert(
+      {
+        user_id: userId,
+        summary,
+        message_count: newCount,
+        last_summarized_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "user_id" }
+    );
+
+    console.log("Conversation summary updated for user", userId);
+  } catch (e) {
+    console.error("Failed to update summary:", e);
+  }
+}
+
 serve(async (req) => {
   if (req.method === "OPTIONS") {
     return new Response(null, { headers: corsHeaders });
@@ -725,8 +799,11 @@ serve(async (req) => {
 
     // Get user from auth token
     const token = authHeader.replace("Bearer ", "");
-    const { data: { user }, error: userError } = await supabase.auth.getUser(token);
-    
+    const {
+      data: { user },
+      error: userError,
+    } = await supabase.auth.getUser(token);
+
     if (userError || !user) {
       return new Response(JSON.stringify({ error: "Invalid token" }), {
         status: 401,
@@ -740,6 +817,7 @@ serve(async (req) => {
       pendingConfirmation,
       confirmedAction,
       currentHackathonId,
+      stream,
     } = await req.json();
 
     // Check guardrails
@@ -747,9 +825,7 @@ serve(async (req) => {
     if (guardrailCheck.blocked) {
       return new Response(
         JSON.stringify({ response: guardrailCheck.reason, blocked: true }),
-        {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -760,15 +836,18 @@ serve(async (req) => {
       .eq("user_id", user.id)
       .single();
 
-    // Build system prompt
-    const systemPrompt = `You are HackerBuddy, a helpful AI assistant for a hackathon community platform.
+    // Get existing summary for long-term context
+    const existingSummary = await getConversationSummary(supabase, user.id);
+
+    // Build system prompt with summary context
+    let systemPrompt = `You are HackerBuddy, a helpful AI assistant for a hackathon community platform.
 
 Current user: ${profile?.username || "User"} (@${profile?.userid || "unknown"})
 
 IMPORTANT RULES:
 1. Use the database as the source of truth for hackathons, teams, friends, and participations.
 2. If a tool returns {needs_selection: true}, show the options and ask the user to choose ONE (usually by slug or userid).
-3. For any data-changing action (creating a team, sending a friend request, inviting to a team, submitting a hackathon), always ask for confirmation first.
+3. For any data-changing action, always ask for confirmation first.
 4. Never invent links or hackathons. If a hackathon's url is missing, say it's missing.
 5. Be concise and action-oriented.
 
@@ -780,17 +859,27 @@ Available capabilities:
 - Search users by username/userid/UUID (partial supported)
 - Web search (when needed)`;
 
-    // Build messages for AI
-    const messages = [
-      { role: "system", content: systemPrompt },
-      ...(conversationHistory || []).slice(-20),
-      { role: "user", content: message },
-    ];
+    if (existingSummary?.summary) {
+      systemPrompt += `\n\nPrevious conversation summary:\n${existingSummary.summary}`;
+    }
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
     if (!LOVABLE_API_KEY) {
       throw new Error("LOVABLE_API_KEY is not configured");
     }
+
+    // Build messages for AI (last 20)
+    const recentHistory = (conversationHistory || []).slice(-20);
+    const messages = [
+      { role: "system", content: systemPrompt },
+      ...recentHistory,
+      { role: "user", content: message },
+    ];
+
+    // Periodically update summary (every 20 messages since last summary)
+    const totalMessages = (existingSummary?.messageCount || 0) + recentHistory.length + 1;
+    const shouldUpdateSummary =
+      totalMessages >= 20 && totalMessages % 20 < 5;
 
     // If this is a confirmation response, execute the pending action
     if (confirmedAction && pendingConfirmation) {
@@ -803,6 +892,11 @@ Available capabilities:
         { currentHackathonId }
       );
 
+      // Update summary in background
+      if (shouldUpdateSummary) {
+        updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
+      }
+
       return new Response(
         JSON.stringify({
           response: result.result?.success
@@ -810,9 +904,7 @@ Available capabilities:
             : `❌ ${result.result?.error || "Action failed"}`,
           toolResults: [result.result],
         }),
-        {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        }
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );
     }
 
@@ -828,22 +920,23 @@ Available capabilities:
         messages,
         tools,
         tool_choice: "auto",
+        stream: false, // First call is non-streaming to handle tool calls
       }),
     });
 
     if (!aiResponse.ok) {
       const errorText = await aiResponse.text();
       console.error("AI API error:", aiResponse.status, errorText);
-      
+
       if (aiResponse.status === 429) {
-        return new Response(JSON.stringify({ 
-          error: "I'm receiving too many requests right now. Please try again in a moment." 
-        }), {
-          status: 429,
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({
+            error: "I'm receiving too many requests right now. Please try again in a moment.",
+          }),
+          { status: 429, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
-      
+
       throw new Error("AI service error");
     }
 
@@ -854,44 +947,45 @@ Available capabilities:
       throw new Error("No response from AI");
     }
 
-    // Handle tool calls
+    // Handle tool calls (non-streaming)
     if (choice.message?.tool_calls?.length > 0) {
       const toolResults = [];
       let pendingConfirmationAction = null;
 
-       for (const toolCall of choice.message.tool_calls) {
-         const toolName = toolCall.function.name;
-         const toolArgs = JSON.parse(toolCall.function.arguments || "{}");
+      for (const toolCall of choice.message.tool_calls) {
+        const toolName = toolCall.function.name;
+        const toolArgs = JSON.parse(toolCall.function.arguments || "{}");
 
-         console.log(`Executing tool: ${toolName}`, toolArgs);
+        console.log(`Executing tool: ${toolName}`, toolArgs);
 
-         const result = await executeToolCall(toolName, toolArgs, supabase, user.id, false, {
-           currentHackathonId,
-         });
+        const result = await executeToolCall(toolName, toolArgs, supabase, user.id, false, {
+          currentHackathonId,
+        });
 
-         if (result.needsConfirmation) {
-           pendingConfirmationAction = {
-             name: toolName,
-             arguments: toolArgs,
-             message: result.confirmationMessage,
-           };
-           break;
-         }
+        if (result.needsConfirmation) {
+          pendingConfirmationAction = {
+            name: toolName,
+            arguments: toolArgs,
+            message: result.confirmationMessage,
+          };
+          break;
+        }
 
-         toolResults.push({ tool: toolName, result: result.result });
-       }
+        toolResults.push({ tool: toolName, result: result.result });
+      }
 
       // If there's a pending confirmation, return it
       if (pendingConfirmationAction) {
-        return new Response(JSON.stringify({
-          response: pendingConfirmationAction.message,
-          pendingConfirmation: pendingConfirmationAction,
-        }), {
-          headers: { ...corsHeaders, "Content-Type": "application/json" },
-        });
+        return new Response(
+          JSON.stringify({
+            response: pendingConfirmationAction.message,
+            pendingConfirmation: pendingConfirmationAction,
+          }),
+          { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+        );
       }
 
-      // Get AI to summarize tool results
+      // Get AI to summarize tool results - with streaming if requested
       const summaryMessages = [
         ...messages,
         { role: "assistant", content: null, tool_calls: choice.message.tool_calls },
@@ -901,6 +995,35 @@ Available capabilities:
           content: JSON.stringify(tr.result),
         })),
       ];
+
+      if (stream) {
+        // SSE streaming for tool result summary
+        const summaryResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${LOVABLE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "google/gemini-2.5-flash",
+            messages: summaryMessages,
+            stream: true,
+          }),
+        });
+
+        if (!summaryResponse.ok || !summaryResponse.body) {
+          throw new Error("Streaming failed");
+        }
+
+        // Update summary in background
+        if (shouldUpdateSummary) {
+          updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
+        }
+
+        return new Response(summaryResponse.body, {
+          headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+        });
+      }
 
       const summaryResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
         method: "POST",
@@ -915,31 +1038,70 @@ Available capabilities:
       });
 
       const summaryData = await summaryResponse.json();
-      const summaryContent = summaryData.choices?.[0]?.message?.content || "I completed the action.";
+      const summaryContent =
+        summaryData.choices?.[0]?.message?.content || "I completed the action.";
 
-      return new Response(JSON.stringify({
-        response: summaryContent,
-        toolResults,
-      }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
+      // Update summary in background
+      if (shouldUpdateSummary) {
+        updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
+      }
+
+      return new Response(
+        JSON.stringify({ response: summaryContent, toolResults }),
+        { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+      );
+    }
+
+    // No tool calls - stream or return directly
+    if (stream) {
+      // Make a new streaming request
+      const streamResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${LOVABLE_API_KEY}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: "google/gemini-2.5-flash",
+          messages,
+          stream: true,
+        }),
+      });
+
+      if (!streamResponse.ok || !streamResponse.body) {
+        throw new Error("Streaming failed");
+      }
+
+      // Update summary in background
+      if (shouldUpdateSummary) {
+        updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
+      }
+
+      return new Response(streamResponse.body, {
+        headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
       });
     }
 
-    // No tool calls, just return the response
-    return new Response(JSON.stringify({
-      response: choice.message?.content || "I'm not sure how to help with that.",
-    }), {
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    // Update summary in background
+    if (shouldUpdateSummary) {
+      updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
+    }
 
+    // Non-streaming response
+    return new Response(
+      JSON.stringify({
+        response: choice.message?.content || "I'm not sure how to help with that.",
+      }),
+      { headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   } catch (error) {
     console.error("HackerBuddy error:", error);
-    return new Response(JSON.stringify({ 
-      error: "I encountered an error. Please try again.",
-      details: error instanceof Error ? error.message : "Unknown error"
-    }), {
-      status: 500,
-      headers: { ...corsHeaders, "Content-Type": "application/json" },
-    });
+    return new Response(
+      JSON.stringify({
+        error: "I encountered an error. Please try again.",
+        details: error instanceof Error ? error.message : "Unknown error",
+      }),
+      { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
+    );
   }
 });

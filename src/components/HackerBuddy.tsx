@@ -2,18 +2,28 @@ import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { 
-  Bot, 
-  X, 
-  Send, 
-  Loader2, 
-  MessageCircle,
+import {
+  Bot,
+  X,
+  Send,
+  Loader2,
   Check,
   XCircle,
-  Trash2
+  Trash2,
 } from 'lucide-react';
 
 interface Message {
@@ -68,12 +78,14 @@ const HackerBuddy = () => {
     }
 
     if (data) {
-      setMessages(data.map(m => ({
-        id: m.id,
-        role: m.role as 'user' | 'assistant',
-        content: m.content,
-        timestamp: new Date(m.created_at),
-      })));
+      setMessages(
+        data.map((m) => ({
+          id: m.id,
+          role: m.role as 'user' | 'assistant',
+          content: m.content,
+          timestamp: new Date(m.created_at),
+        }))
+      );
     }
   };
 
@@ -110,6 +122,12 @@ const HackerBuddy = () => {
       return;
     }
 
+    // Also clear conversation summary
+    await supabase
+      .from('ai_conversation_summaries')
+      .delete()
+      .eq('user_id', user.id);
+
     setMessages([]);
     setPendingAction(null);
     toast.success('Chat cleared');
@@ -135,7 +153,7 @@ const HackerBuddy = () => {
     };
 
     if (!confirmAction) {
-      setMessages(prev => [...prev, userMessage]);
+      setMessages((prev) => [...prev, userMessage]);
       setInput('');
       await saveMessage('user', messageText);
     }
@@ -147,77 +165,142 @@ const HackerBuddy = () => {
     const currentHackathonId = hackathonMatch?.[1];
 
     try {
-      const response = await supabase.functions.invoke('hackerbuddy-chat', {
-        body: {
-          message: messageText,
-          conversationHistory: messages.slice(-20).map(m => ({
-            role: m.role,
-            content: m.content,
-          })),
-          pendingConfirmation: confirmAction && pendingAction ? true : false,
-          confirmedAction: confirmAction ? pendingAction : undefined,
-          currentHackathonId,
-        },
-      });
+      // Request streaming
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/hackerbuddy-chat`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
+          body: JSON.stringify({
+            message: messageText,
+            conversationHistory: messages.slice(-20).map((m) => ({
+              role: m.role,
+              content: m.content,
+            })),
+            pendingConfirmation: confirmAction && pendingAction ? true : false,
+            confirmedAction: confirmAction ? pendingAction : undefined,
+            currentHackathonId,
+            stream: true,
+          }),
+        }
+      );
 
-      if (response.error) {
-        throw new Error(response.error.message);
+      if (!response.ok) {
+        throw new Error(`Request failed: ${response.status}`);
       }
 
-      const data = response.data;
+      const contentType = response.headers.get('Content-Type') || '';
 
-      if (data.error) {
-        throw new Error(data.error);
-      }
+      // Handle SSE streaming
+      if (contentType.includes('text/event-stream') && response.body) {
+        const assistantId = `temp-${Date.now()}-response`;
+        setMessages((prev) => [
+          ...prev,
+          { id: assistantId, role: 'assistant', content: '', timestamp: new Date() },
+        ]);
 
-      // Handle pending confirmation
-      if (data.pendingConfirmation) {
-        setPendingAction(data.pendingConfirmation);
-      } else {
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let textBuffer = '';
+        let fullContent = '';
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          textBuffer += decoder.decode(value, { stream: true });
+
+          let newlineIndex: number;
+          while ((newlineIndex = textBuffer.indexOf('\n')) !== -1) {
+            let line = textBuffer.slice(0, newlineIndex);
+            textBuffer = textBuffer.slice(newlineIndex + 1);
+
+            if (line.endsWith('\r')) line = line.slice(0, -1);
+            if (line.startsWith(':') || line.trim() === '') continue;
+            if (!line.startsWith('data: ')) continue;
+
+            const jsonStr = line.slice(6).trim();
+            if (jsonStr === '[DONE]') break;
+
+            try {
+              const parsed = JSON.parse(jsonStr);
+              const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+              if (content) {
+                fullContent += content;
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId ? { ...m, content: fullContent } : m
+                  )
+                );
+              }
+            } catch {
+              // Incomplete JSON, put it back
+              textBuffer = line + '\n' + textBuffer;
+              break;
+            }
+          }
+        }
+
+        // Final flush
+        if (textBuffer.trim()) {
+          for (let raw of textBuffer.split('\n')) {
+            if (!raw) continue;
+            if (raw.endsWith('\r')) raw = raw.slice(0, -1);
+            if (raw.startsWith(':') || raw.trim() === '') continue;
+            if (!raw.startsWith('data: ')) continue;
+            const jsonStr = raw.slice(6).trim();
+            if (jsonStr === '[DONE]') continue;
+            try {
+              const parsed = JSON.parse(jsonStr);
+              const content = parsed.choices?.[0]?.delta?.content as string | undefined;
+              if (content) {
+                fullContent += content;
+                setMessages((prev) =>
+                  prev.map((m) =>
+                    m.id === assistantId ? { ...m, content: fullContent } : m
+                  )
+                );
+              }
+            } catch {
+              /* ignore */
+            }
+          }
+        }
+
         setPendingAction(null);
-      }
+        if (fullContent) {
+          await saveMessage('assistant', fullContent);
+        }
+      } else {
+        // Non-streaming JSON response (e.g. pending confirmation)
+        const data = await response.json();
 
-      const responseText: string = data.response || "I'm not sure how to help with that.";
+        if (data.error) {
+          throw new Error(data.error);
+        }
 
-      // Add assistant response (quick streaming-like reveal for long messages)
-      const assistantId = `temp-${Date.now()}-response`;
-      const shouldAnimate = !data.pendingConfirmation && responseText.length > 180;
+        if (data.pendingConfirmation) {
+          setPendingAction(data.pendingConfirmation);
+        } else {
+          setPendingAction(null);
+        }
 
-      if (!shouldAnimate) {
+        const responseText: string = data.response || "I'm not sure how to help with that.";
+
         const assistantMessage: Message = {
-          id: assistantId,
+          id: `temp-${Date.now()}-response`,
           role: 'assistant',
           content: responseText,
           timestamp: new Date(),
           pendingConfirmation: data.pendingConfirmation,
         };
-        setMessages(prev => [...prev, assistantMessage]);
-        await saveMessage('assistant', responseText);
-      } else {
-        const assistantMessage: Message = {
-          id: assistantId,
-          role: 'assistant',
-          content: '',
-          timestamp: new Date(),
-        };
-        setMessages(prev => [...prev, assistantMessage]);
-
-        const chunkSize = 18;
-        let i = 0;
-        const interval = window.setInterval(() => {
-          i += chunkSize;
-          const next = responseText.slice(0, i);
-          setMessages(prev =>
-            prev.map(m => (m.id === assistantId ? { ...m, content: next } : m))
-          );
-          if (i >= responseText.length) {
-            window.clearInterval(interval);
-          }
-        }, 25);
-
+        setMessages((prev) => [...prev, assistantMessage]);
         await saveMessage('assistant', responseText);
       }
-
     } catch (error) {
       console.error('HackerBuddy error:', error);
       const errorMessage: Message = {
@@ -226,7 +309,7 @@ const HackerBuddy = () => {
         content: "I'm having trouble right now. Please try again in a moment.",
         timestamp: new Date(),
       };
-      setMessages(prev => [...prev, errorMessage]);
+      setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
     }
@@ -244,7 +327,7 @@ const HackerBuddy = () => {
       content: "No problem! Let me know if there's anything else I can help you with.",
       timestamp: new Date(),
     };
-    setMessages(prev => [...prev, rejectMessage]);
+    setMessages((prev) => [...prev, rejectMessage]);
   };
 
   if (!user) {
@@ -272,21 +355,27 @@ const HackerBuddy = () => {
               <span className="font-semibold">HackerBuddy</span>
             </div>
             <div className="flex items-center gap-2">
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={clearChat}
-                className="h-8 w-8"
-                title="Clear chat"
-              >
-                <Trash2 className="h-4 w-4" />
-              </Button>
-              <Button
-                variant="ghost"
-                size="icon"
-                onClick={() => setIsOpen(false)}
-                className="h-8 w-8"
-              >
+              <AlertDialog>
+                <AlertDialogTrigger asChild>
+                  <Button variant="ghost" size="icon" className="h-8 w-8" title="Clear chat">
+                    <Trash2 className="h-4 w-4" />
+                  </Button>
+                </AlertDialogTrigger>
+                <AlertDialogContent>
+                  <AlertDialogHeader>
+                    <AlertDialogTitle>Clear chat history?</AlertDialogTitle>
+                    <AlertDialogDescription>
+                      This will permanently delete all your messages with HackerBuddy. This action
+                      cannot be undone.
+                    </AlertDialogDescription>
+                  </AlertDialogHeader>
+                  <AlertDialogFooter>
+                    <AlertDialogCancel>Cancel</AlertDialogCancel>
+                    <AlertDialogAction onClick={clearChat}>Delete</AlertDialogAction>
+                  </AlertDialogFooter>
+                </AlertDialogContent>
+              </AlertDialog>
+              <Button variant="ghost" size="icon" onClick={() => setIsOpen(false)} className="h-8 w-8">
                 <X className="h-4 w-4" />
               </Button>
             </div>
@@ -311,14 +400,15 @@ const HackerBuddy = () => {
                   >
                     <div
                       className={`max-w-[80%] rounded-lg p-3 ${
-                        message.role === 'user'
-                          ? 'bg-primary text-primary-foreground'
-                          : 'bg-muted'
+                        message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
                       }`}
                     >
                       <p className="text-sm whitespace-pre-wrap">{message.content}</p>
                       <p className="text-xs opacity-60 mt-1">
-                        {message.timestamp.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                        {message.timestamp.toLocaleTimeString([], {
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
                       </p>
                     </div>
                   </div>
@@ -338,20 +428,11 @@ const HackerBuddy = () => {
           {/* Confirmation buttons */}
           {pendingAction && !isLoading && (
             <div className="p-3 border-t border-border bg-muted/30 flex gap-2">
-              <Button
-                onClick={handleConfirm}
-                size="sm"
-                className="flex-1"
-              >
+              <Button onClick={handleConfirm} size="sm" className="flex-1">
                 <Check className="h-4 w-4 mr-1" />
                 Yes, proceed
               </Button>
-              <Button
-                onClick={handleReject}
-                variant="outline"
-                size="sm"
-                className="flex-1"
-              >
+              <Button onClick={handleReject} variant="outline" size="sm" className="flex-1">
                 <XCircle className="h-4 w-4 mr-1" />
                 Cancel
               </Button>
@@ -369,11 +450,7 @@ const HackerBuddy = () => {
                 disabled={isLoading || !!pendingAction}
                 className="flex-1"
               />
-              <Button 
-                type="submit" 
-                size="icon" 
-                disabled={isLoading || !input.trim() || !!pendingAction}
-              >
+              <Button type="submit" size="icon" disabled={isLoading || !input.trim() || !!pendingAction}>
                 <Send className="h-4 w-4" />
               </Button>
             </div>
