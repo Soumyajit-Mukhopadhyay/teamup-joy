@@ -26,16 +26,18 @@ import {
   Trash2,
 } from 'lucide-react';
 
+interface PendingAction {
+  name: string;
+  arguments: Record<string, any>;
+  message: string;
+}
+
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
-  pendingConfirmation?: {
-    name: string;
-    arguments: Record<string, any>;
-    message: string;
-  };
+  pendingConfirmation?: PendingAction;
 }
 
 // Custom event for AI actions that require UI refresh
@@ -51,7 +53,8 @@ const HackerBuddy = () => {
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
-  const [pendingAction, setPendingAction] = useState<Message['pendingConfirmation'] | null>(null);
+  const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
+  const [remainingTasks, setRemainingTasks] = useState<PendingAction[]>([]);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -158,7 +161,7 @@ const HackerBuddy = () => {
     toast.success('Chat cleared');
   };
 
-  const sendMessage = async (e?: React.FormEvent, confirmAction?: boolean) => {
+  const sendMessage = async (e?: React.FormEvent, confirmAction?: boolean, tasksToRun?: PendingAction[]) => {
     e?.preventDefault();
 
     if (!user) {
@@ -211,6 +214,7 @@ const HackerBuddy = () => {
             })),
             pendingConfirmation: confirmAction && pendingAction ? true : false,
             confirmedAction: confirmAction ? pendingAction : undefined,
+            remainingTasks: tasksToRun || remainingTasks,
             currentHackathonId,
             stream: true,
           }),
@@ -302,6 +306,7 @@ const HackerBuddy = () => {
         }
 
         setPendingAction(null);
+        setRemainingTasks([]);
         if (fullContent) {
           await saveMessage('assistant', fullContent);
         }
@@ -315,14 +320,33 @@ const HackerBuddy = () => {
 
         if (data.pendingConfirmation) {
           setPendingAction(data.pendingConfirmation);
+          // Store remaining tasks for later execution
+          if (data.remainingTasks && Array.isArray(data.remainingTasks)) {
+            setRemainingTasks(data.remainingTasks);
+          } else {
+            setRemainingTasks([]);
+          }
         } else {
           setPendingAction(null);
+          setRemainingTasks([]);
         }
 
         // If an action was completed, emit event for UI refresh
         if (data.actionCompleted) {
           emitAIActionEvent(data.actionCompleted);
           toast.success('Action completed');
+          
+          // If there are remaining tasks, automatically continue to the next one
+          if (remainingTasks.length > 0 && !data.pendingConfirmation) {
+            const nextTask = remainingTasks[0];
+            const newRemainingTasks = remainingTasks.slice(1);
+            setRemainingTasks(newRemainingTasks);
+            
+            // Automatically execute the next task
+            setTimeout(() => {
+              executeNextTask(nextTask, newRemainingTasks);
+            }, 500);
+          }
         }
 
         const responseText: string = data.response || "I'm not sure how to help with that.";
@@ -353,12 +377,115 @@ const HackerBuddy = () => {
     }
   };
 
-  const handleConfirm = () => {
-    sendMessage(undefined, true);
+  // Execute remaining tasks after confirmation
+  const executeNextTask = async (task: PendingAction, newRemainingTasks: PendingAction[]) => {
+    setIsLoading(true);
+    
+    const pathname = window.location.pathname || '';
+    const hackathonMatch = pathname.match(/^\/hackathon\/([^/]+)$/);
+    const currentHackathonId = hackathonMatch?.[1];
+    
+    try {
+      const response = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/hackerbuddy-chat`,
+        {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+          },
+          body: JSON.stringify({
+            message: 'Continue with next task',
+            conversationHistory: messages.slice(-20).map((m) => ({
+              role: m.role,
+              content: m.content,
+            })),
+            pendingConfirmation: true,
+            confirmedAction: task,
+            remainingTasks: newRemainingTasks,
+            currentHackathonId,
+            stream: false,
+          }),
+        }
+      );
+
+      const data = await response.json();
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      // If there's another pending confirmation
+      if (data.pendingConfirmation) {
+        setPendingAction(data.pendingConfirmation);
+        if (data.remainingTasks) {
+          setRemainingTasks(data.remainingTasks);
+        }
+      } else {
+        setPendingAction(null);
+        setRemainingTasks([]);
+      }
+
+      if (data.actionCompleted) {
+        emitAIActionEvent(data.actionCompleted);
+      }
+
+      const responseText = data.response || "Task completed.";
+      const assistantMessage: Message = {
+        id: `temp-${Date.now()}-response`,
+        role: 'assistant',
+        content: responseText,
+        timestamp: new Date(),
+        pendingConfirmation: data.pendingConfirmation,
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+      await saveMessage('assistant', responseText);
+
+      // Continue to next task if there are more and no confirmation needed
+      if (newRemainingTasks.length > 0 && !data.pendingConfirmation) {
+        const nextTask = newRemainingTasks[0];
+        const newerRemainingTasks = newRemainingTasks.slice(1);
+        setRemainingTasks(newerRemainingTasks);
+        setTimeout(() => {
+          executeNextTask(nextTask, newerRemainingTasks);
+        }, 500);
+      }
+    } catch (error) {
+      console.error('Error executing next task:', error);
+      const errorMessage: Message = {
+        id: `temp-${Date.now()}-error`,
+        role: 'assistant',
+        content: "I encountered an error with the next task. Please try again.",
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+      setRemainingTasks([]);
+    } finally {
+      setIsLoading(false);
+      setTimeout(scrollToBottom, 100);
+    }
+  };
+
+  const handleConfirm = async () => {
+    // Execute the pending action
+    await sendMessage(undefined, true);
+    
+    // After confirmation, if there are remaining tasks, continue automatically
+    if (remainingTasks.length > 0) {
+      const nextTask = remainingTasks[0];
+      const newRemainingTasks = remainingTasks.slice(1);
+      
+      // Wait a bit then execute the next task
+      setTimeout(() => {
+        executeNextTask(nextTask, newRemainingTasks);
+      }, 1000);
+    }
   };
 
   const handleReject = () => {
     setPendingAction(null);
+    setRemainingTasks([]);
     const rejectMessage: Message = {
       id: `temp-${Date.now()}-reject`,
       role: 'assistant',

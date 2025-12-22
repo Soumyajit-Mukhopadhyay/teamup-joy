@@ -486,44 +486,94 @@ async function executeToolCall(
     const query = cleanQuery(queryRaw);
     if (!query) return { type: "none" as const, matches: [] as any[] };
 
-    // Normalize query - remove common words, make lowercase
+    // Normalize query - lowercase and clean
     const normalizedQuery = query.toLowerCase().replace(/\s+/g, ' ').trim();
     
     // 1) Exact by slug or id
     const exact = await supabase
       .from("hackathons")
-      .select("id, slug, name, region, start_date, end_date, url")
+      .select("id, slug, name, region, start_date, end_date, url, location, description")
       .or(`slug.eq.${query},id.eq.${query}`)
       .eq("status", "approved")
       .maybeSingle();
 
     if (exact.data) return { type: "single" as const, match: exact.data };
 
-    // 2) Partial name match - try multiple variations
-    const searchTerms = normalizedQuery.split(' ').filter(t => t.length >= 3);
-    
-    let partialQuery = supabase
+    // 2) EXACT NAME MATCH FIRST (case-insensitive) - prevents hallucination
+    const { data: exactNameMatch } = await supabase
       .from("hackathons")
-      .select("id, slug, name, region, start_date, end_date, url")
-      .eq("status", "approved");
-    
-    // Search for any of the terms in the name
-    if (searchTerms.length > 0) {
-      const orConditions = searchTerms.map(term => `name.ilike.%${term}%`).join(',');
-      partialQuery = partialQuery.or(orConditions);
-    } else {
-      partialQuery = partialQuery.ilike("name", `%${normalizedQuery}%`);
+      .select("id, slug, name, region, start_date, end_date, url, location, description")
+      .eq("status", "approved")
+      .ilike("name", normalizedQuery);
+
+    if (exactNameMatch?.length === 1) {
+      return { type: "single" as const, match: exactNameMatch[0] };
     }
-    
-    const { data: partial, error } = await partialQuery
-      .order("start_date", { ascending: true })
-      .limit(5);
+
+    // 3) If multiple exact matches, return them for selection
+    if (exactNameMatch && exactNameMatch.length > 1) {
+      return { type: "many" as const, matches: exactNameMatch };
+    }
+
+    // 4) Fuzzy search - only search for the actual query, not random terms
+    // Use a scoring system: prioritize matches where ALL words appear
+    const { data: allHackathons, error } = await supabase
+      .from("hackathons")
+      .select("id, slug, name, region, start_date, end_date, url, location, description")
+      .eq("status", "approved")
+      .order("start_date", { ascending: true });
 
     if (error) return { type: "error" as const, error: error.message };
-    if (!partial?.length) return { type: "none" as const, matches: [] as any[] };
-    if (partial.length === 1) return { type: "single" as const, match: partial[0] };
+    if (!allHackathons?.length) return { type: "none" as const, matches: [] as any[] };
 
-    return { type: "many" as const, matches: partial };
+    // Score each hackathon based on how well it matches the query
+    const searchTerms = normalizedQuery.split(' ').filter(t => t.length >= 2);
+    
+    const scoredMatches = allHackathons
+      .map((h: any) => {
+        const nameLower = h.name.toLowerCase();
+        let score = 0;
+        
+        // Exact name contains full query = highest score
+        if (nameLower.includes(normalizedQuery)) {
+          score += 100;
+        }
+        
+        // Count how many search terms appear in the name
+        let matchedTerms = 0;
+        for (const term of searchTerms) {
+          if (nameLower.includes(term)) {
+            matchedTerms++;
+            score += 10;
+          }
+        }
+        
+        // Bonus if ALL terms match
+        if (searchTerms.length > 0 && matchedTerms === searchTerms.length) {
+          score += 50;
+        }
+        
+        // Name starts with query = bonus
+        if (nameLower.startsWith(normalizedQuery)) {
+          score += 30;
+        }
+        
+        return { ...h, score };
+      })
+      .filter((h: any) => h.score > 0)
+      .sort((a: any, b: any) => b.score - a.score)
+      .slice(0, 5);
+
+    if (!scoredMatches.length) return { type: "none" as const, matches: [] as any[] };
+    
+    // If top match has significantly higher score than others, use it
+    if (scoredMatches.length === 1 || 
+        (scoredMatches.length > 1 && scoredMatches[0].score >= 100 && scoredMatches[0].score > scoredMatches[1].score * 2)) {
+      return { type: "single" as const, match: scoredMatches[0] };
+    }
+
+    // Otherwise return top matches for selection
+    return { type: "many" as const, matches: scoredMatches };
   };
 
   const resolveUser = async (queryRaw: string) => {
@@ -1533,35 +1583,73 @@ async function executeToolCall(
       if (!perplexityKey) {
         return { result: { error: "Weather service is not configured" } };
       }
-      try {
-        const response = await fetch("https://api.perplexity.ai/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${perplexityKey}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "sonar",
-            messages: [
-              {
-                role: "system",
-                content: "You are a weather assistant. Provide current weather conditions for the requested location. Include temperature (in both Celsius and Fahrenheit), conditions, humidity, and any relevant weather alerts. Be concise.",
-              },
-              { role: "user", content: `What is the current weather in ${args.location}?` },
-            ],
-          }),
-        });
-        const data = await response.json();
-        return {
-          result: {
-            weather: data.choices?.[0]?.message?.content || "Unable to get weather information",
-            location: args.location,
-            citations: data.citations || [],
-          },
-        };
-      } catch (_e) {
-        return { result: { error: "Weather lookup failed" } };
+      
+      // Retry logic for Perplexity API
+      const maxRetries = 3;
+      let lastError: any = null;
+      
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const response = await fetch("https://api.perplexity.ai/chat/completions", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${perplexityKey}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "sonar",
+              messages: [
+                {
+                  role: "system",
+                  content: "You are a weather assistant. Provide current weather conditions for the requested location. Include temperature (in both Celsius and Fahrenheit), conditions, humidity, and any relevant weather alerts. Be concise.",
+                },
+                { role: "user", content: `What is the current weather in ${args.location}?` },
+              ],
+            }),
+          });
+          
+          if (response.status === 429) {
+            // Rate limited - wait and retry
+            const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+            console.log(`Weather API rate limited, retrying in ${waitTime}ms (attempt ${attempt + 1}/${maxRetries})`);
+            if (attempt < maxRetries - 1) {
+              await new Promise(resolve => setTimeout(resolve, waitTime));
+              continue;
+            }
+          }
+          
+          if (!response.ok) {
+            const errorText = await response.text();
+            console.error("Weather API error:", response.status, errorText);
+            throw new Error(`Weather API error: ${response.status}`);
+          }
+          
+          const data = await response.json();
+          const weatherContent = data.choices?.[0]?.message?.content;
+          
+          if (!weatherContent) {
+            throw new Error("No weather data in response");
+          }
+          
+          return {
+            result: {
+              weather: weatherContent,
+              location: args.location,
+              citations: data.citations || [],
+            },
+          };
+        } catch (e) {
+          lastError = e;
+          console.error(`Weather lookup attempt ${attempt + 1} failed:`, e);
+          
+          if (attempt < maxRetries - 1) {
+            const waitTime = Math.pow(2, attempt) * 1000;
+            await new Promise(resolve => setTimeout(resolve, waitTime));
+          }
+        }
       }
+      
+      return { result: { error: `Unable to get weather for "${args.location}". Please try again in a moment.` } };
     }
 
     case "get_hackathon_calendar_link": {
@@ -2027,10 +2115,19 @@ HACKATHON LINK HANDLING:
     if (choice.message?.tool_calls?.length > 0) {
       const toolResults = [];
       let pendingConfirmationAction = null;
+      const remainingToolCalls: any[] = [];
+      let foundPendingConfirmation = false;
 
-      for (const toolCall of choice.message.tool_calls) {
+      for (let i = 0; i < choice.message.tool_calls.length; i++) {
+        const toolCall = choice.message.tool_calls[i];
         const toolName = toolCall.function.name;
         const toolArgs = JSON.parse(toolCall.function.arguments || "{}");
+
+        // If we already found a pending confirmation, queue remaining calls
+        if (foundPendingConfirmation) {
+          remainingToolCalls.push({ name: toolName, arguments: toolArgs });
+          continue;
+        }
 
         console.log(`Executing tool: ${toolName}`, toolArgs);
 
@@ -2039,23 +2136,40 @@ HACKATHON LINK HANDLING:
         });
 
         if (result.needsConfirmation) {
+          foundPendingConfirmation = true;
           pendingConfirmationAction = {
             name: toolName,
             arguments: toolArgs,
             message: result.confirmationMessage,
           };
+          
+          // Queue remaining tool calls
+          for (let j = i + 1; j < choice.message.tool_calls.length; j++) {
+            const nextCall = choice.message.tool_calls[j];
+            remainingToolCalls.push({ 
+              name: nextCall.function.name, 
+              arguments: JSON.parse(nextCall.function.arguments || "{}") 
+            });
+          }
           break;
         }
 
         toolResults.push({ tool: toolName, result: result.result });
       }
 
-      // If there's a pending confirmation, return it
+      // If there's a pending confirmation, return it with remaining tasks
       if (pendingConfirmationAction) {
+        // Build a combined confirmation message if there are multiple tasks
+        let confirmMessage = pendingConfirmationAction.message;
+        if (remainingToolCalls.length > 0) {
+          confirmMessage += `\n\n(After this, I'll also ${remainingToolCalls.map(t => t.name.replace(/_/g, ' ')).join(' and ')})`;
+        }
+        
         return new Response(
           JSON.stringify({
-            response: pendingConfirmationAction.message,
+            response: confirmMessage,
             pendingConfirmation: pendingConfirmationAction,
+            remainingTasks: remainingToolCalls.length > 0 ? remainingToolCalls : undefined,
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );
