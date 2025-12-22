@@ -13,6 +13,9 @@ type ActionType =
   | 'set_looking_for_teammates'
   | 'remove_team_member'
   | 'submit_hackathon'
+  | 'get_hackathon_calendar_link'
+  | 'get_hackathon_share_link'
+  | 'visit_hackathon_website'
   | string;
 
 interface UseAIActionRefreshOptions {
