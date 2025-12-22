@@ -7,9 +7,11 @@ import HackathonCard from '@/components/HackathonCard';
 import HackathonCalendar from '@/components/HackathonCalendar';
 import { hackathons as initialHackathons, Hackathon } from '@/data/hackathons';
 import { supabase } from '@/integrations/supabase/client';
+import { useIsAdmin } from '@/hooks/useIsAdmin';
 
 const Index = () => {
   const navigate = useNavigate();
+  const { isAdmin } = useIsAdmin();
   const [view, setView] = useState<'grid' | 'calendar'>('grid');
   const [search, setSearch] = useState('');
   const [selectedRegion, setSelectedRegion] = useState('All Regions');
@@ -90,6 +92,7 @@ const Index = () => {
                 onClick={() => navigate(`/hackathon/${hackathon.id}`)}
                 isDbHackathon={dbHackathonIds.has(hackathon.id)}
                 onUpdated={() => setRefreshKey(k => k + 1)}
+                isAdmin={isAdmin}
               />
             ))}
           </div>
