@@ -10,6 +10,7 @@ import { hackathons } from '@/data/hackathons';
 import { toast } from 'sonner';
 import { Users, Search, Plus, UserPlus, X, ArrowLeft } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
+import { useUserTeamsForHackathon } from '@/hooks/useUserTeamsForHackathon';
 
 interface SearchResult {
   id: string;
@@ -22,6 +23,7 @@ const CreateTeam = () => {
   const { hackathonId } = useParams();
   const navigate = useNavigate();
   const { user, profile, loading: authLoading } = useAuth();
+  const { teamCount, canCreateMoreTeams } = useUserTeamsForHackathon(hackathonId);
 
   const [teamName, setTeamName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -95,6 +97,26 @@ const CreateTeam = () => {
     setSelectedMembers(prev => prev.filter(m => m.user_id !== userId));
   };
 
+  const addHackathonParticipation = async (userId: string, hackathonId: string) => {
+    // Check if participation already exists
+    const { data: existing } = await supabase
+      .from('hackathon_participations')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('hackathon_id', hackathonId)
+      .maybeSingle();
+
+    if (!existing) {
+      await supabase
+        .from('hackathon_participations')
+        .insert({
+          user_id: userId,
+          hackathon_id: hackathonId,
+          status: 'current',
+        });
+    }
+  };
+
   const handleCreateTeam = async () => {
     if (!teamName.trim()) {
       toast.error('Please enter a team name');
@@ -102,6 +124,11 @@ const CreateTeam = () => {
     }
 
     if (!user || !hackathonId) return;
+
+    if (!canCreateMoreTeams) {
+      toast.error('Maximum 5 teams per hackathon reached');
+      return;
+    }
 
     setLoading(true);
 
@@ -130,6 +157,9 @@ const CreateTeam = () => {
         });
 
       if (memberError) throw memberError;
+
+      // Add hackathon participation for creator
+      await addHackathonParticipation(user.id, hackathonId);
 
       // Send team requests to selected members
       if (selectedMembers.length > 0) {
@@ -192,107 +222,119 @@ const CreateTeam = () => {
             <div>
               <h1 className="text-2xl font-bold">Create Team</h1>
               <p className="text-muted-foreground text-sm">{hackathon.name}</p>
+              {teamCount > 0 && (
+                <p className="text-xs text-muted-foreground">You have {teamCount}/5 teams</p>
+              )}
             </div>
           </div>
 
-          <div className="space-y-6">
-            {/* Team Name */}
-            <div className="space-y-2">
-              <Label htmlFor="teamName">Team Name</Label>
-              <Input
-                id="teamName"
-                value={teamName}
-                onChange={(e) => setTeamName(e.target.value)}
-                placeholder="Enter team name"
-                className="input-dark"
-              />
+          {!canCreateMoreTeams ? (
+            <div className="text-center py-8">
+              <p className="text-muted-foreground mb-4">You've reached the maximum of 5 teams for this hackathon.</p>
+              <Button variant="outline" onClick={() => navigate('/teams')}>
+                View Your Teams
+              </Button>
             </div>
-
-            {/* Search Users */}
-            <div className="space-y-2">
-              <Label>Invite Team Members</Label>
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+          ) : (
+            <div className="space-y-6">
+              {/* Team Name */}
+              <div className="space-y-2">
+                <Label htmlFor="teamName">Team Name</Label>
                 <Input
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Search by user ID or username..."
-                  className="pl-9 input-dark"
+                  id="teamName"
+                  value={teamName}
+                  onChange={(e) => setTeamName(e.target.value)}
+                  placeholder="Enter team name"
+                  className="input-dark"
                 />
               </div>
 
-              {/* Search Results */}
-              {searchResults.length > 0 && (
-                <div className="border border-border rounded-lg divide-y divide-border bg-card">
-                  {searchResults.map((result) => (
-                    <div
-                      key={result.user_id}
-                      className="flex items-center justify-between p-3 hover:bg-secondary/50 transition-colors"
-                    >
-                      <div className="flex items-center gap-3">
-                        <Avatar className="h-8 w-8">
-                          <AvatarFallback className="bg-primary/20 text-primary text-sm">
-                            {result.username[0]?.toUpperCase()}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div>
-                          <p className="font-medium text-sm">{result.username}</p>
-                          <p className="text-xs text-muted-foreground">@{result.userid}</p>
-                        </div>
-                      </div>
-                      <Button
-                        size="sm"
-                        variant="ghost"
-                        onClick={() => addMember(result)}
-                      >
-                        <UserPlus className="h-4 w-4" />
-                      </Button>
-                    </div>
-                  ))}
-                </div>
-              )}
-
-              {searching && (
-                <p className="text-sm text-muted-foreground">Searching...</p>
-              )}
-            </div>
-
-            {/* Selected Members */}
-            {selectedMembers.length > 0 && (
+              {/* Search Users */}
               <div className="space-y-2">
-                <Label>Selected Members ({selectedMembers.length})</Label>
-                <div className="flex flex-wrap gap-2">
-                  {selectedMembers.map((member) => (
-                    <div
-                      key={member.user_id}
-                      className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/20 text-sm"
-                    >
-                      <span>@{member.userid}</span>
-                      <button
-                        onClick={() => removeMember(member.user_id)}
-                        className="text-muted-foreground hover:text-foreground"
-                      >
-                        <X className="h-3 w-3" />
-                      </button>
-                    </div>
-                  ))}
+                <Label>Invite Team Members</Label>
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
+                  <Input
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search by user ID or username..."
+                    className="pl-9 input-dark"
+                  />
                 </div>
+
+                {/* Search Results */}
+                {searchResults.length > 0 && (
+                  <div className="border border-border rounded-lg divide-y divide-border bg-card">
+                    {searchResults.map((result) => (
+                      <div
+                        key={result.user_id}
+                        className="flex items-center justify-between p-3 hover:bg-secondary/50 transition-colors"
+                      >
+                        <div className="flex items-center gap-3">
+                          <Avatar className="h-8 w-8">
+                            <AvatarFallback className="bg-primary/20 text-primary text-sm">
+                              {result.username[0]?.toUpperCase()}
+                            </AvatarFallback>
+                          </Avatar>
+                          <div>
+                            <p className="font-medium text-sm">{result.username}</p>
+                            <p className="text-xs text-muted-foreground">@{result.userid}</p>
+                          </div>
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => addMember(result)}
+                        >
+                          <UserPlus className="h-4 w-4" />
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+                {searching && (
+                  <p className="text-sm text-muted-foreground">Searching...</p>
+                )}
               </div>
-            )}
 
-            {/* Create Button */}
-            <Button
-              onClick={handleCreateTeam}
-              disabled={loading || !teamName.trim()}
-              className="w-full btn-gradient"
-            >
-              {loading ? 'Creating...' : 'Create Team'}
-            </Button>
+              {/* Selected Members */}
+              {selectedMembers.length > 0 && (
+                <div className="space-y-2">
+                  <Label>Selected Members ({selectedMembers.length})</Label>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedMembers.map((member) => (
+                      <div
+                        key={member.user_id}
+                        className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-primary/20 text-sm"
+                      >
+                        <span>@{member.userid}</span>
+                        <button
+                          onClick={() => removeMember(member.user_id)}
+                          className="text-muted-foreground hover:text-foreground"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
-            <p className="text-xs text-muted-foreground text-center">
-              Selected members will receive an invitation to join your team
-            </p>
-          </div>
+              {/* Create Button */}
+              <Button
+                onClick={handleCreateTeam}
+                disabled={loading || !teamName.trim()}
+                className="w-full btn-gradient"
+              >
+                {loading ? 'Creating...' : 'Create Team'}
+              </Button>
+
+              <p className="text-xs text-muted-foreground text-center">
+                Selected members will receive an invitation to join your team
+              </p>
+            </div>
+          )}
         </div>
       </main>
     </div>

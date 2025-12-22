@@ -5,11 +5,21 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { User, Users, Calendar, MessageCircle, Clock, Search as SearchIcon } from 'lucide-react';
+import { User, Users, Calendar, MessageCircle, Clock, Search as SearchIcon, X } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { hackathons } from '@/data/hackathons';
-import { format } from 'date-fns';
+import { format, parseISO, isAfter } from 'date-fns';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface Team {
   id: string;
@@ -33,6 +43,9 @@ const Profile = () => {
   const [teams, setTeams] = useState<Team[]>([]);
   const [participations, setParticipations] = useState<Participation[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
+  const [selectedParticipation, setSelectedParticipation] = useState<Participation | null>(null);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     if (!user) {
@@ -89,6 +102,54 @@ const Profile = () => {
 
   const getHackathon = (hackathonId: string) => {
     return hackathons.find(h => h.id === hackathonId);
+  };
+
+  const isHackathonOngoing = (hackathonId: string) => {
+    const hackathon = getHackathon(hackathonId);
+    if (!hackathon) return false;
+    const endDate = parseISO(hackathon.endDate);
+    return isAfter(endDate, new Date());
+  };
+
+  const hasTeamsForHackathon = (hackathonId: string) => {
+    return teams.some(t => t.hackathon_id === hackathonId);
+  };
+
+  const handleDeleteClick = (participation: Participation) => {
+    const ongoing = isHackathonOngoing(participation.hackathon_id);
+    const hasTeams = hasTeamsForHackathon(participation.hackathon_id);
+
+    if (ongoing && hasTeams) {
+      toast.error('For ongoing hackathons, you must leave all teams first before removing it from your profile.');
+      return;
+    }
+
+    setSelectedParticipation(participation);
+    setDeleteDialogOpen(true);
+  };
+
+  const handleDeleteParticipation = async () => {
+    if (!selectedParticipation || !user) return;
+
+    setDeleting(true);
+
+    try {
+      const { error } = await supabase
+        .from('hackathon_participations')
+        .delete()
+        .eq('id', selectedParticipation.id);
+
+      if (error) throw error;
+
+      toast.success('Hackathon removed from your profile');
+      setParticipations(prev => prev.filter(p => p.id !== selectedParticipation.id));
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to remove hackathon');
+    } finally {
+      setDeleting(false);
+      setDeleteDialogOpen(false);
+      setSelectedParticipation(null);
+    }
   };
 
   const currentParticipations = participations.filter(p => p.status === 'current' || p.status === 'looking_for_team');
@@ -186,9 +247,27 @@ const Profile = () => {
               <div className="grid gap-4">
                 {currentParticipations.map((p) => {
                   const hackathon = getHackathon(p.hackathon_id);
+                  const ongoing = isHackathonOngoing(p.hackathon_id);
+                  const hasTeams = hasTeamsForHackathon(p.hackathon_id);
+                  
                   return (
-                    <div key={p.id} className="glass-card p-5 card-hover" onClick={() => navigate(`/hackathon/${p.hackathon_id}`)}>
-                      <div className="flex items-center justify-between">
+                    <div key={p.id} className="glass-card p-5 card-hover relative">
+                      {/* Delete button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteClick(p);
+                        }}
+                        className="absolute top-3 right-3 p-1 rounded-full hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
+                        title={ongoing && hasTeams ? "Leave teams first" : "Remove from profile"}
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+
+                      <div 
+                        className="flex items-center justify-between cursor-pointer pr-6" 
+                        onClick={() => navigate(`/hackathon/${p.hackathon_id}`)}
+                      >
                         <div>
                           <h3 className="font-semibold">{hackathon?.name || p.hackathon_id}</h3>
                           <p className="text-sm text-muted-foreground">{hackathon?.location}</p>
@@ -218,9 +297,22 @@ const Profile = () => {
                 {pastParticipations.map((p) => {
                   const hackathon = getHackathon(p.hackathon_id);
                   return (
-                    <div key={p.id} className="glass-card p-5 card-hover">
-                      <h3 className="font-semibold">{hackathon?.name || p.hackathon_id}</h3>
-                      <p className="text-sm text-muted-foreground">{hackathon?.location}</p>
+                    <div key={p.id} className="glass-card p-5 card-hover relative">
+                      {/* Delete button */}
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleDeleteClick(p);
+                        }}
+                        className="absolute top-3 right-3 p-1 rounded-full hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
+                        title="Remove from profile"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                      <div className="pr-6">
+                        <h3 className="font-semibold">{hackathon?.name || p.hackathon_id}</h3>
+                        <p className="text-sm text-muted-foreground">{hackathon?.location}</p>
+                      </div>
                     </div>
                   );
                 })}
@@ -229,6 +321,29 @@ const Profile = () => {
           </TabsContent>
         </Tabs>
       </main>
+
+      {/* Delete Participation Dialog */}
+      <AlertDialog open={deleteDialogOpen} onOpenChange={setDeleteDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Remove Hackathon</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to remove this hackathon from your profile? 
+              This will remove it from your participation list.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={deleting}>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={handleDeleteParticipation} 
+              disabled={deleting}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {deleting ? 'Removing...' : 'Remove'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };
