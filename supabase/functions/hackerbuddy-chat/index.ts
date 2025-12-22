@@ -418,6 +418,57 @@ const tools = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "admin_train_ai",
+      description: "ADMIN ONLY: Add a training example to teach the AI new patterns. Only admins can use this. Format: example request → expected tool sequence.",
+      parameters: {
+        type: "object",
+        properties: {
+          example_request: { 
+            type: "string", 
+            description: "The example user request/message" 
+          },
+          tool_sequence: {
+            type: "array",
+            items: { type: "string" },
+            description: "The sequence of tools that should be called for this request"
+          },
+          expected_response: {
+            type: "string",
+            description: "Optional: The expected AI response summary"
+          },
+        },
+        required: ["example_request", "tool_sequence"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_ai_learning_stats",
+      description: "ADMIN ONLY: Get statistics about AI learning patterns and success rates.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_ai_pattern",
+      description: "ADMIN ONLY: Delete a learned pattern by its hash or description.",
+      parameters: {
+        type: "object",
+        properties: {
+          pattern_query: { 
+            type: "string", 
+            description: "Pattern hash or part of the example request to find and delete" 
+          },
+        },
+        required: ["pattern_query"],
+      },
+    },
+  },
 ];
 
 // Guardrails - actions that require confirmation
@@ -526,12 +577,18 @@ async function recordLearningFeedback(
   aiResponse: string,
   toolCalls: any[] | null,
   wasSuccessful: boolean | null,
-  executionTimeMs?: number
+  executionTimeMs?: number,
+  isMultiTask: boolean = false
 ): Promise<void> {
   try {
     const toolSequence = toolCalls?.map(t => t.name || t.function?.name).filter(Boolean) || [];
     const patternHash = generatePatternHash(userMessage);
     const requestType = classifyRequestType(toolCalls || []);
+    
+    // Quality check: only record if we have meaningful data
+    if (!userMessage.trim() || (toolCalls && toolCalls.length === 0)) {
+      return;
+    }
     
     // Record the feedback
     await supabase.from("ai_learning_feedback").insert({
@@ -546,9 +603,16 @@ async function recordLearningFeedback(
       pattern_hash: patternHash,
     });
     
-    // If successful, update or create learned pattern
+    // If successful, update or create learned pattern with quality controls
     if (wasSuccessful && toolSequence.length > 0) {
-      await updateLearnedPattern(supabase, patternHash, userMessage, aiResponse, toolSequence);
+      await updateLearnedPattern(
+        supabase, 
+        patternHash, 
+        userMessage, 
+        aiResponse, 
+        toolSequence,
+        isMultiTask
+      );
     }
   } catch (e) {
     console.error("Failed to record learning feedback:", e);
@@ -556,30 +620,70 @@ async function recordLearningFeedback(
 }
 
 // Update or create a learned pattern based on successful interaction
+// With quality controls to prevent bad patterns
 async function updateLearnedPattern(
   supabase: any,
   patternHash: string,
   userMessage: string,
   aiResponse: string,
-  toolSequence: string[]
+  toolSequence: string[],
+  isMultiTask: boolean = false
 ): Promise<void> {
   try {
+    // QUALITY CONTROLS:
+    // 1. Don't learn from very short messages (could be noise)
+    if (userMessage.trim().length < 10) {
+      console.log("Skipping pattern: message too short");
+      return;
+    }
+    
+    // 2. Don't learn from messages with blocked patterns
+    for (const pattern of BLOCKED_PATTERNS) {
+      if (pattern.test(userMessage)) {
+        console.log("Skipping pattern: contains blocked content");
+        return;
+      }
+    }
+    
+    // 3. Multi-task patterns get priority (they're more valuable)
+    const successIncrement = isMultiTask ? 2 : 1;
+    
     // Try to find existing pattern
     const { data: existing } = await supabase
       .from("ai_learned_patterns")
-      .select("id, success_count")
+      .select("id, success_count, failure_count, tool_sequence")
       .eq("pattern_hash", patternHash)
       .maybeSingle();
     
     if (existing) {
-      // Increment success count
-      await supabase
-        .from("ai_learned_patterns")
-        .update({
-          success_count: existing.success_count + 1,
-          last_used_at: new Date().toISOString(),
-        })
-        .eq("id", existing.id);
+      // 4. If new tool sequence is different but success rate is high, don't overwrite
+      const currentRate = existing.success_count / (existing.success_count + existing.failure_count + 1);
+      const sequenceChanged = JSON.stringify(existing.tool_sequence) !== JSON.stringify(toolSequence);
+      
+      if (sequenceChanged && currentRate > 0.8 && existing.success_count > 5) {
+        // Only increment, don't change sequence for well-established patterns
+        await supabase
+          .from("ai_learned_patterns")
+          .update({
+            success_count: existing.success_count + successIncrement,
+            last_used_at: new Date().toISOString(),
+          })
+          .eq("id", existing.id);
+        console.log("Pattern success incremented (sequence preserved):", patternHash);
+      } else {
+        // Update with new sequence
+        await supabase
+          .from("ai_learned_patterns")
+          .update({
+            success_count: existing.success_count + successIncrement,
+            last_used_at: new Date().toISOString(),
+            tool_sequence: toolSequence,
+            example_request: userMessage.slice(0, 500),
+            example_response: aiResponse.slice(0, 500),
+          })
+          .eq("id", existing.id);
+        console.log("Pattern updated:", patternHash);
+      }
     } else {
       // Create new pattern
       await supabase.from("ai_learned_patterns").insert({
@@ -588,30 +692,80 @@ async function updateLearnedPattern(
         tool_sequence: toolSequence,
         example_request: userMessage.slice(0, 500),
         example_response: aiResponse.slice(0, 500),
+        success_count: successIncrement,
+        failure_count: 0,
       });
+      console.log("New pattern created:", patternHash);
     }
   } catch (e) {
     console.error("Failed to update learned pattern:", e);
   }
 }
 
-// Record a failed pattern
+// Record a failed pattern and cleanup bad patterns
 async function recordPatternFailure(supabase: any, patternHash: string): Promise<void> {
   try {
     const { data: existing } = await supabase
       .from("ai_learned_patterns")
-      .select("id, failure_count")
+      .select("id, failure_count, success_count")
       .eq("pattern_hash", patternHash)
       .maybeSingle();
     
     if (existing) {
-      await supabase
-        .from("ai_learned_patterns")
-        .update({ failure_count: existing.failure_count + 1 })
-        .eq("id", existing.id);
+      const newFailureCount = existing.failure_count + 1;
+      const total = existing.success_count + newFailureCount;
+      const successRate = total > 0 ? existing.success_count / total : 0;
+      
+      // QUALITY CONTROL: Delete patterns with high failure rate
+      if (total >= 5 && successRate < 0.3) {
+        console.log(`Deleting low-quality pattern: ${patternHash} (rate: ${Math.round(successRate * 100)}%)`);
+        await supabase
+          .from("ai_learned_patterns")
+          .delete()
+          .eq("id", existing.id);
+      } else {
+        await supabase
+          .from("ai_learned_patterns")
+          .update({ failure_count: newFailureCount })
+          .eq("id", existing.id);
+      }
     }
   } catch (e) {
     console.error("Failed to record pattern failure:", e);
+  }
+}
+
+// Cleanup stale or low-quality patterns (called periodically)
+async function cleanupBadPatterns(supabase: any): Promise<void> {
+  try {
+    // Delete patterns that are old (>30 days) and have low success rate
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const { data: oldPatterns } = await supabase
+      .from("ai_learned_patterns")
+      .select("id, success_count, failure_count, last_used_at")
+      .lt("last_used_at", thirtyDaysAgo.toISOString());
+    
+    if (!oldPatterns?.length) return;
+    
+    const toDelete = oldPatterns.filter((p: any) => {
+      const total = p.success_count + p.failure_count;
+      const successRate = total > 0 ? p.success_count / total : 0;
+      // Delete if low usage AND low success rate
+      return total < 10 || successRate < 0.5;
+    });
+    
+    if (toDelete.length > 0) {
+      const idsToDelete = toDelete.map((p: any) => p.id);
+      await supabase
+        .from("ai_learned_patterns")
+        .delete()
+        .in("id", idsToDelete);
+      console.log(`Cleaned up ${toDelete.length} stale patterns`);
+    }
+  } catch (e) {
+    console.error("Failed to cleanup patterns:", e);
   }
 }
 
@@ -2253,6 +2407,241 @@ async function executeToolCall(
       };
     }
 
+    case "admin_train_ai": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can train the AI. Your request has been logged.",
+            message: "❌ Admin access required to train the AI."
+          }
+        };
+      }
+
+      const { example_request, tool_sequence, expected_response } = args;
+      
+      if (!example_request || !tool_sequence?.length) {
+        return {
+          result: {
+            success: false,
+            error: "Missing required fields: example_request and tool_sequence",
+            message: "❌ Please provide an example request and the tool sequence."
+          }
+        };
+      }
+
+      const patternHash = generatePatternHash(example_request);
+      
+      // Check if pattern already exists
+      const { data: existing } = await supabase
+        .from("ai_learned_patterns")
+        .select("id, success_count")
+        .eq("pattern_hash", patternHash)
+        .maybeSingle();
+
+      if (existing) {
+        // Update existing pattern
+        await supabase
+          .from("ai_learned_patterns")
+          .update({
+            tool_sequence,
+            example_request: example_request.slice(0, 500),
+            example_response: expected_response?.slice(0, 500) || null,
+            success_count: existing.success_count + 10, // Boost admin-added patterns
+            last_used_at: new Date().toISOString(),
+          })
+          .eq("id", existing.id);
+
+        return {
+          result: {
+            success: true,
+            action_type: "admin_train_ai",
+            message: `✅ Pattern updated! Hash: ${patternHash}\nTools: ${tool_sequence.join(" → ")}\nThis pattern now has boosted priority.`,
+            pattern_hash: patternHash,
+          }
+        };
+      }
+
+      // Create new pattern with high success count (admin-validated)
+      await supabase.from("ai_learned_patterns").insert({
+        pattern_hash: patternHash,
+        request_pattern: patternHash,
+        tool_sequence,
+        example_request: example_request.slice(0, 500),
+        example_response: expected_response?.slice(0, 500) || null,
+        success_count: 10, // Start with high count (admin-validated)
+        failure_count: 0,
+      });
+
+      return {
+        result: {
+          success: true,
+          action_type: "admin_train_ai",
+          message: `✅ New pattern added!\nHash: ${patternHash}\nExample: "${example_request.slice(0, 50)}..."\nTools: ${tool_sequence.join(" → ")}\n\nThe AI will now use this pattern for similar requests.`,
+          pattern_hash: patternHash,
+        }
+      };
+    }
+
+    case "get_ai_learning_stats": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can view AI learning stats.",
+            message: "❌ Admin access required."
+          }
+        };
+      }
+
+      // Get pattern stats
+      const { data: patterns, count: totalPatterns } = await supabase
+        .from("ai_learned_patterns")
+        .select("*", { count: "exact" })
+        .order("success_count", { ascending: false })
+        .limit(10);
+
+      // Get feedback stats
+      const { count: totalFeedback } = await supabase
+        .from("ai_learning_feedback")
+        .select("*", { count: "exact" });
+
+      const { count: successfulFeedback } = await supabase
+        .from("ai_learning_feedback")
+        .select("*", { count: "exact" })
+        .eq("was_successful", true);
+
+      // Calculate stats
+      const successRate = totalFeedback ? Math.round((successfulFeedback || 0) / totalFeedback * 100) : 0;
+      
+      const topPatterns = (patterns || []).map((p: any) => ({
+        hash: p.pattern_hash,
+        example: p.example_request?.slice(0, 60) + "...",
+        tools: p.tool_sequence.join(" → "),
+        successes: p.success_count,
+        failures: p.failure_count,
+        rate: Math.round(p.success_count / (p.success_count + p.failure_count) * 100) + "%"
+      }));
+
+      return {
+        result: {
+          success: true,
+          action_type: "get_ai_learning_stats",
+          stats: {
+            total_patterns: totalPatterns,
+            total_interactions: totalFeedback,
+            successful_interactions: successfulFeedback,
+            success_rate: successRate + "%",
+            top_patterns: topPatterns,
+          },
+          message: `📊 AI Learning Stats:\n• Total patterns: ${totalPatterns}\n• Total interactions: ${totalFeedback}\n• Success rate: ${successRate}%\n\nTop patterns:\n${topPatterns.map((p: any, i: number) => `${i+1}. [${p.rate}] ${p.tools}`).join("\n")}`,
+        }
+      };
+    }
+
+    case "delete_ai_pattern": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can delete AI patterns.",
+            message: "❌ Admin access required."
+          }
+        };
+      }
+
+      const query = args.pattern_query?.trim();
+      if (!query) {
+        return {
+          result: {
+            success: false,
+            error: "Please provide a pattern hash or example request text to search for.",
+            message: "❌ Missing pattern query."
+          }
+        };
+      }
+
+      // Try to find by hash first
+      let { data: patterns } = await supabase
+        .from("ai_learned_patterns")
+        .select("id, pattern_hash, example_request, tool_sequence")
+        .eq("pattern_hash", query);
+
+      // If not found by hash, search by example request
+      if (!patterns?.length) {
+        const { data: searchResults } = await supabase
+          .from("ai_learned_patterns")
+          .select("id, pattern_hash, example_request, tool_sequence")
+          .ilike("example_request", `%${query}%`)
+          .limit(5);
+        patterns = searchResults;
+      }
+
+      if (!patterns?.length) {
+        return {
+          result: {
+            success: false,
+            error: "No patterns found matching your query.",
+            message: `❌ No patterns found for: "${query}"`
+          }
+        };
+      }
+
+      if (patterns.length > 1) {
+        return {
+          result: {
+            needs_selection: true,
+            message: "Multiple patterns found. Please specify which one to delete:",
+            matches: patterns.map((p: any) => ({
+              hash: p.pattern_hash,
+              example: p.example_request?.slice(0, 60),
+              tools: p.tool_sequence.join(" → "),
+            })),
+          }
+        };
+      }
+
+      // Delete the single matching pattern
+      const patternToDelete = patterns[0];
+      await supabase
+        .from("ai_learned_patterns")
+        .delete()
+        .eq("id", patternToDelete.id);
+
+      return {
+        result: {
+          success: true,
+          action_type: "delete_ai_pattern",
+          message: `✅ Pattern deleted!\nHash: ${patternToDelete.pattern_hash}\nExample: "${patternToDelete.example_request?.slice(0, 50)}..."`,
+          deleted_hash: patternToDelete.pattern_hash,
+        }
+      };
+    }
+
     default:
       return { result: { error: "Unknown action" } };
   }
@@ -2641,7 +3030,28 @@ CRITICAL RULES (MEMORIZE THESE)
 7. Date formats: DD/MM/YY → YYYY-MM-DD (01/02/26 = 2026-02-01)
 8. Parse natural language locations: "online asia" = location="Online", region="Asia"
 9. Be SMART: understand context, don't be literal.
-10. LEARN from each interaction - save successful patterns.`;
+10. LEARN from each interaction - save successful patterns.
+
+═══════════════════════════════════════════════════════════════
+ADMIN TRAINING CAPABILITIES (ADMIN USERS ONLY)
+═══════════════════════════════════════════════════════════════
+
+If an ADMIN user wants to train you with examples:
+- Use admin_train_ai tool to add new patterns
+- Use get_ai_learning_stats to see learning statistics
+- Use delete_ai_pattern to remove bad patterns
+
+Example training command: "Train AI: when user says 'create teams X and Y for hackathon Z', call create_team twice"
+→ Call admin_train_ai with:
+  - example_request: "create teams X and Y for hackathon Z"
+  - tool_sequence: ["create_team", "create_team"]
+
+The AI learns automatically from:
+- Every successful multi-task execution (priority learning)
+- Every successful single-task execution
+- Admin-provided examples (highest priority)
+
+Low-quality patterns are automatically removed if they fail too often.`;
 
     // Inject learned patterns into system prompt
     const learnedPatterns = await getLearnedPatterns(supabase);
@@ -2651,6 +3061,11 @@ CRITICAL RULES (MEMORIZE THESE)
 
     if (existingSummary?.summary) {
       systemPrompt += `\n\nPrevious conversation summary:\n${existingSummary.summary}`;
+    }
+    
+    // Periodically cleanup bad patterns (1% chance per request)
+    if (Math.random() < 0.01) {
+      cleanupBadPatterns(supabase);
     }
 
     const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
@@ -2700,7 +3115,8 @@ CRITICAL RULES (MEMORIZE THESE)
         confirmedMsg,
         [{ name: confirmedAction.name, arguments: confirmedAction.arguments }],
         confirmedOk,
-        executionTime
+        executionTime,
+        false // single action
       );
 
       // Track pattern failure if action failed
@@ -2928,6 +3344,8 @@ CRITICAL RULES (MEMORIZE THESE)
       // Record learning feedback for successful tool execution
       const executionTime = Date.now() - executionStartTime;
       const allToolsSucceeded = toolResults.every((tr: any) => !tr.result?.error);
+      const isMultiTask = choice.message.tool_calls.length > 1;
+      
       recordLearningFeedback(
         supabase,
         message,
@@ -2937,7 +3355,8 @@ CRITICAL RULES (MEMORIZE THESE)
           arguments: JSON.parse(tc.function.arguments || "{}") 
         })),
         allToolsSucceeded,
-        executionTime
+        executionTime,
+        isMultiTask // multi-task patterns get priority
       );
 
       // Track failures if any tool failed
