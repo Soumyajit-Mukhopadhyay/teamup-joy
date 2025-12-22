@@ -9,6 +9,7 @@ import { toast } from 'sonner';
 import { Users, MessageCircle, Calendar, Settings, X } from 'lucide-react';
 import { format, parseISO, isAfter } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
+import { useAIActionRefresh } from '@/hooks/useAIActionRefresh';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -93,6 +94,14 @@ const Teams = () => {
 
     return infoMap;
   }, []);
+
+  // Listen for AI actions that affect teams
+  useAIActionRefresh({
+    actions: ['leave_team', 'delete_team', 'create_team', 'accept_team_request', 'set_looking_for_teammates'],
+    onAction: () => {
+      fetchTeams();
+    },
+  });
 
   useEffect(() => {
     if (authLoading) return;
