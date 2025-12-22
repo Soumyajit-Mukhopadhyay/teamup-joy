@@ -2430,7 +2430,31 @@ You CAN submit hackathons for admin approval. Required fields:
 Optional: description, url, organizer
 
 ═══════════════════════════════════════════════════════════════
-EXAMPLES WITH CORRECT TOOL COUNTS (CRITICAL - FOLLOW EXACTLY)
+AUTO-EXECUTE MULTI-TASK MODE (CRITICAL - READ CAREFULLY)
+═══════════════════════════════════════════════════════════════
+
+WHEN USER SAYS ANY OF THESE, EXECUTE ALL TASKS WITHOUT INDIVIDUAL CONFIRMATIONS:
+- "perform X tasks" (e.g., "perform 4 tasks")
+- "do all X tasks" 
+- "execute all tasks"
+- "confirm" (after listing tasks)
+- "yes, proceed"
+- "do it all"
+- "run all"
+- "consecutively" / "all at once" / "together"
+
+AUTO-EXECUTE MODE:
+When user confirms or explicitly requests batch execution:
+1. List ALL tasks briefly first (one line each)
+2. Execute ALL tool calls in ONE response
+3. Report results for ALL tasks together
+4. DO NOT ask for confirmation one-by-one
+
+NORMAL MODE (single tasks or user wants to review each):
+Ask for confirmation before each destructive action.
+
+═══════════════════════════════════════════════════════════════
+COMPREHENSIVE TRAINING EXAMPLES (FOLLOW EXACTLY)
 ═══════════════════════════════════════════════════════════════
 
 Example 1 - "Create team1 and team2 for L'Oréal Brandstorm"
@@ -2451,21 +2475,61 @@ Example 3 - "Create team1 team3 in hackathonX, remove friend Y, and add hackatho
   - Task 4: submit_hackathon(name="dummy7", ...) - need dates/location first!
 → NEVER assume max 3 tasks. Count EVERY distinct action!
 
-Example 4 - "Remove friend X and send new request"
+Example 4 - "Create two teams team1 team3 in MLH global hack week and then send friend request to 'Soumyajit' then add a hackathon named dummy8 with info 01/02/26 09/08/26 online asia"
+→ 4 TASKS (user provided ALL info):
+  - Task 1: create_team(name="team1", hackathon_query="MLH global hack week")
+  - Task 2: create_team(name="team3", hackathon_query="MLH global hack week")
+  - Task 3: send_friend_request(user_query="Soumyajit")
+  - Task 4: submit_hackathon(name="dummy8", start_date="2026-01-02", end_date="2026-09-08", location="Online", region="Asia")
+→ Call ALL 4 tools in ONE response!
+
+Example 5 - "perform all 4 tasks" / "confirm" / "do it"
+→ IMMEDIATELY execute ALL previously listed tasks
+→ DO NOT ask for confirmation again
+→ Call all tool functions and report combined results
+
+Example 6 - "Remove friend X and send new request to X"
 → 2 TASKS → Call remove_friend, then send_friend_request
 
-Example 5 - "Send friend request to John"
+Example 7 - "Send friend request to John"
 → 1 TASK → Call send_friend_request ONCE only
 
-Example 6 - "Where is the friends page?"
+Example 8 - "Where is the friends page?"
 → Tell them: "The Friends page is at /friends. You can also find it in the navigation bar at the top. Would you like me to take you there?"
 → If they say yes, use navigate_to_page(path="/friends")
 
-Example 7 - "Show me the calendar view" / "Take me to calendar"
-→ Use navigate_to_page(path="/", description="Calendar view") and tell them to click the Calendar button in the top-right of the hackathon listings to switch to calendar view.
-→ The home page has a Grid/Calendar toggle button.
+Example 9 - "Show me the calendar view" / "Take me to calendar"
+→ Use navigate_to_page(path="/", description="Calendar view")
 
-CRITICAL RULE: There is NO maximum number of tasks. If user says "perform 4 tasks" or lists 5 actions, detect and execute ALL of them. Never cap at 3!`;
+Example 10 - "Create 5 teams: alpha, beta, gamma, delta, epsilon for HackMIT"
+→ 5 TASKS → Call create_team FIVE times
+
+Example 11 - "Remove friends A, B, C and send requests to X, Y"
+→ 5 TASKS:
+  - remove_friend(A)
+  - remove_friend(B)
+  - remove_friend(C)
+  - send_friend_request(X)
+  - send_friend_request(Y)
+
+Example 12 - "Add hackathon TestHack starting 2026-03-01 ending 2026-03-15 in Boston, North America"
+→ 1 TASK with ALL info provided:
+  - submit_hackathon(name="TestHack", start_date="2026-03-01", end_date="2026-03-15", location="Boston", region="North America")
+
+═══════════════════════════════════════════════════════════════
+CRITICAL RULES (MEMORIZE THESE)
+═══════════════════════════════════════════════════════════════
+
+1. There is NO maximum number of tasks. 1, 2, 3, 4, 5, 10, 20 - detect ALL.
+2. If user says "perform X tasks", you MUST detect exactly X tasks.
+3. If user confirms ("yes", "confirm", "do it", "proceed"), execute ALL pending tasks immediately.
+4. When user provides all info upfront, EXECUTE - don't ask again.
+5. Count team names separately: "team1, team2, team3" = 3 create_team calls.
+6. Count friend names separately: "remove A, B, C" = 3 remove_friend calls.
+7. Date formats: DD/MM/YY → YYYY-MM-DD (01/02/26 = 2026-02-01)
+8. Parse natural language locations: "online asia" = location="Online", region="Asia"
+9. Be SMART: understand context, don't be literal.
+10. LEARN from each interaction - save successful patterns.`;
 
     // Inject learned patterns into system prompt
     const learnedPatterns = await getLearnedPatterns(supabase);
@@ -2651,62 +2715,74 @@ CRITICAL RULE: There is NO maximum number of tasks. If user says "perform 4 task
     // Handle tool calls (non-streaming)
     if (choice.message?.tool_calls?.length > 0) {
       const toolResults = [];
-      let pendingConfirmationAction = null;
-      const remainingToolCalls: any[] = [];
-      let foundPendingConfirmation = false;
+      let pendingConfirmationActions: any[] = [];
+      const executedToolCalls: any[] = [];
+
+      // Check if user has explicitly requested auto-execution
+      const lowerMessage = message.toLowerCase();
+      const isAutoExecuteMode = 
+        lowerMessage.includes("confirm") ||
+        lowerMessage.includes("proceed") ||
+        lowerMessage.includes("do it") ||
+        lowerMessage.includes("yes") ||
+        lowerMessage.includes("execute") ||
+        lowerMessage.includes("perform") ||
+        lowerMessage.includes("consecutively") ||
+        lowerMessage.includes("all at once") ||
+        lowerMessage.includes("together") ||
+        lowerMessage.includes("run all") ||
+        lowerMessage.includes("do all") ||
+        /perform\s*\d+\s*task/i.test(lowerMessage);
+
+      console.log(`Auto-execute mode: ${isAutoExecuteMode}, Tool calls: ${choice.message.tool_calls.length}`);
 
       for (let i = 0; i < choice.message.tool_calls.length; i++) {
         const toolCall = choice.message.tool_calls[i];
         const toolName = toolCall.function.name;
         const toolArgs = JSON.parse(toolCall.function.arguments || "{}");
 
-        // If we already found a pending confirmation, queue remaining calls
-        if (foundPendingConfirmation) {
-          remainingToolCalls.push({ name: toolName, arguments: toolArgs });
-          continue;
-        }
-
         console.log(`Executing tool: ${toolName}`, toolArgs);
 
-        const result = await executeToolCall(toolName, toolArgs, supabase, user.id, profile, false, {
-          currentHackathonId,
-        });
+        // In auto-execute mode, force confirmation for all actions
+        const result = await executeToolCall(
+          toolName, 
+          toolArgs, 
+          supabase, 
+          user.id, 
+          profile, 
+          isAutoExecuteMode,  // Force confirmed if auto-execute mode
+          { currentHackathonId }
+        );
 
-        if (result.needsConfirmation) {
-          foundPendingConfirmation = true;
-          pendingConfirmationAction = {
+        if (result.needsConfirmation && !isAutoExecuteMode) {
+          // In normal mode, queue this for confirmation
+          pendingConfirmationActions.push({
             name: toolName,
             arguments: toolArgs,
             message: result.confirmationMessage,
-          };
-          
-          // Queue remaining tool calls
-          for (let j = i + 1; j < choice.message.tool_calls.length; j++) {
-            const nextCall = choice.message.tool_calls[j];
-            remainingToolCalls.push({ 
-              name: nextCall.function.name, 
-              arguments: JSON.parse(nextCall.function.arguments || "{}") 
-            });
-          }
-          break;
+          });
+        } else {
+          // Either auto-execute mode or action doesn't need confirmation
+          toolResults.push({ tool: toolName, result: result.result });
+          executedToolCalls.push({ name: toolName, arguments: toolArgs });
         }
-
-        toolResults.push({ tool: toolName, result: result.result });
       }
 
-      // If there's a pending confirmation, return it with remaining tasks
-      if (pendingConfirmationAction) {
-        // Build a combined confirmation message if there are multiple tasks
-        let confirmMessage = pendingConfirmationAction.message;
-        if (remainingToolCalls.length > 0) {
-          confirmMessage += `\n\n(After this, I'll also ${remainingToolCalls.map(t => t.name.replace(/_/g, ' ')).join(' and ')})`;
-        }
+      // If there are pending confirmations (only in non-auto-execute mode)
+      if (pendingConfirmationActions.length > 0 && !isAutoExecuteMode) {
+        // Build a combined confirmation message for ALL pending actions
+        let confirmMessage = "I'm ready to perform the following actions:\n\n";
+        pendingConfirmationActions.forEach((action, idx) => {
+          confirmMessage += `${idx + 1}. ${action.message.replace(/^I'll |^Should I |^\? /, '')}\n`;
+        });
+        confirmMessage += "\nShould I proceed with all of these?";
         
         return new Response(
           JSON.stringify({
             response: confirmMessage,
-            pendingConfirmation: pendingConfirmationAction,
-            remainingTasks: remainingToolCalls.length > 0 ? remainingToolCalls : undefined,
+            pendingConfirmation: pendingConfirmationActions[0], // For backward compatibility
+            allPendingActions: pendingConfirmationActions,
+            alreadyExecuted: toolResults.length > 0 ? toolResults : undefined,
           }),
           { headers: { ...corsHeaders, "Content-Type": "application/json" } }
         );

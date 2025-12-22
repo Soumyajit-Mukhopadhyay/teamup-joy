@@ -580,8 +580,14 @@ const HackerBuddy = () => {
 
         if (data.pendingConfirmation) {
           setPendingAction(data.pendingConfirmation);
-          // Store remaining tasks for batch execution
-          setTaskQueue(data.remainingTasks || []);
+          // Store ALL pending tasks for batch execution (new API: allPendingActions)
+          const allPending = data.allPendingActions || [];
+          // If we have multiple pending actions, queue the rest
+          if (allPending.length > 1) {
+            setTaskQueue(allPending.slice(1));
+          } else {
+            setTaskQueue(data.remainingTasks || []);
+          }
         } else {
           setPendingAction(null);
           setTaskQueue([]);
