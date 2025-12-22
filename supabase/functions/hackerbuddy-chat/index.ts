@@ -388,6 +388,27 @@ const tools = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "navigate_to_page",
+      description: "Navigate the user to a specific page in the app. Use this when guiding users to find features.",
+      parameters: {
+        type: "object",
+        properties: {
+          path: { 
+            type: "string", 
+            description: "The page path to navigate to (e.g., '/friends', '/teams', '/profile', '/notifications', '/hackathon/slug-name')" 
+          },
+          description: {
+            type: "string",
+            description: "Brief description of what's on this page"
+          },
+        },
+        required: ["path"],
+      },
+    },
+  },
 ];
 
 // Guardrails - actions that require confirmation
@@ -1879,6 +1900,30 @@ async function executeToolCall(
       };
     }
 
+    case "navigate_to_page": {
+      const path = args.path || "/";
+      const description = args.description || "";
+      
+      // Build full URL for navigation
+      const baseUrl = "https://hackerbuddy.lovable.app";
+      const fullUrl = path.startsWith("http") ? path : `${baseUrl}${path}`;
+      
+      return {
+        result: {
+          success: true,
+          action_type: "navigate_to_page",
+          path,
+          description,
+          message: `📍 Navigate to: ${path}${description ? ` - ${description}` : ""}`,
+          action: {
+            type: "navigate",
+            path: path,
+            url: fullUrl,
+          },
+        },
+      };
+    }
+
     default:
       return { result: { error: "Unknown action" } };
   }
@@ -2039,6 +2084,49 @@ CURRENT USER (YOU ALREADY KNOW THIS):
 - Handle: @${profile?.userid || "unknown"}
 
 ═══════════════════════════════════════════════════════════════
+🗺️ WEBSITE STRUCTURE & NAVIGATION (YOU KNOW THE ENTIRE APP)
+═══════════════════════════════════════════════════════════════
+
+You have FULL KNOWLEDGE of the website structure. Here are ALL the pages:
+
+MAIN PAGES:
+- / (Home) - Landing page with hackathon listings, hero section, calendar view
+- /auth - Sign in / Sign up page
+- /reset-password - Password reset page
+
+HACKATHON PAGES:
+- /hackathon/:slug - Individual hackathon detail page (shows info, teams, join options)
+
+USER & SOCIAL:
+- /friends - **FRIENDS PAGE** - View friends list, search users, send/manage friend requests, view sent requests
+- /friend-chat/:friendId - Direct message chat with a specific friend
+- /profile - Current user's profile settings
+- /user/:userId - View another user's public profile
+- /notifications - View all notifications (friend requests, team invites, etc.)
+
+TEAMS:
+- /teams - View all teams the user is part of
+- /teams/:hackathonId/create - Create a new team for a hackathon
+- /teams/:teamId/manage - Manage team settings, members (leader only)
+- /teams/:teamId/chat - Team group chat
+
+ADMIN:
+- /admin - Admin panel (only visible to admins) - Approve hackathons, manage users
+
+NAVIGATION HELP:
+When users ask "where is X" or "how do I find X", tell them the exact page:
+- "Where are my friends?" → Go to /friends (Friends link in navigation bar)
+- "How do I message someone?" → Go to /friends, click on a friend, or /friend-chat/:id
+- "Where can I see hackathons?" → Home page (/) shows all hackathons
+- "Where is my profile?" → Click your avatar in the top right, or go to /profile
+- "Where are my teams?" → Go to /teams
+- "How do I create a team?" → Go to a hackathon page (/hackathon/:slug) and click "Create Team"
+- "Where are notifications?" → Bell icon in navigation or /notifications
+- "Where is admin panel?" → /admin (only if you're an admin)
+
+IMPORTANT: You can use navigate_to_page tool to help users go directly to any page!
+
+═══════════════════════════════════════════════════════════════
 ⚠️ CRITICAL: TASK COUNTING - READ THIS VERY CAREFULLY ⚠️
 ═══════════════════════════════════════════════════════════════
 
@@ -2090,6 +2178,7 @@ BEHAVIORAL RULES
 7. DATABASE-FIRST: For friends/teams/requests state, ALWAYS call get_user_friends / get_user_teams / get_pending_requests first. Do NOT rely on chat memory.
 8. HACKATHON QUICK ACTIONS: For "open website", "add to calendar", or "share link", ALWAYS call the relevant tool and only then respond.
 9. "Leave all my teams in hackathon X" MUST use leave_all_teams_for_hackathon (single tool call).
+10. NAVIGATION HELP: When user asks where something is, explain AND offer to navigate them there.
 
 ═══════════════════════════════════════════════════════════════
 CAPABILITIES
@@ -2097,6 +2186,7 @@ CAPABILITIES
 - get_current_datetime: Current time
 - get_weather: Weather for any location
 - web_search: Search the web
+- navigate_to_page: Guide user to a specific page in the app
 - search_hackathons: Find hackathons
 - get_hackathon_calendar_link: Google Calendar link
 - get_hackathon_share_link: Shareable URL
@@ -2135,7 +2225,11 @@ Example 3 - "Remove friend X and send new request"
 → 2 TASKS → Call remove_friend, then send_friend_request
 
 Example 4 - "Send friend request to John"
-→ 1 TASK → Call send_friend_request ONCE only`;
+→ 1 TASK → Call send_friend_request ONCE only
+
+Example 5 - "Where is the friends page?"
+→ Tell them: "The Friends page is at /friends. You can also find it in the navigation bar at the top. Would you like me to take you there?"
+→ If they say yes, use navigate_to_page(path="/friends")`;
 
     if (existingSummary?.summary) {
       systemPrompt += `\n\nPrevious conversation summary:\n${existingSummary.summary}`;
