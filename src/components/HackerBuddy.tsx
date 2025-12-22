@@ -93,12 +93,13 @@ const HackerBuddy = () => {
   const loadMessages = async () => {
     if (!user) return;
 
+    // Load the 100 most recent messages, ordered descending so we get newest first
     const { data, error } = await supabase
       .from('ai_chat_messages')
       .select('*')
       .eq('user_id', user.id)
-      .order('created_at', { ascending: true })
-      .limit(50);
+      .order('created_at', { ascending: false })
+      .limit(100);
 
     if (error) {
       console.error('Error loading messages:', error);
@@ -106,8 +107,9 @@ const HackerBuddy = () => {
     }
 
     if (data) {
+      // Reverse to show oldest first (chronological order for display)
       setMessages(
-        data.map((m) => ({
+        data.reverse().map((m) => ({
           id: m.id,
           role: m.role as 'user' | 'assistant',
           content: m.content,
@@ -568,11 +570,11 @@ const HackerBuddy = () => {
                     className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
                     <div
-                      className={`max-w-[80%] rounded-lg p-3 ${
+                      className={`max-w-[80%] rounded-lg p-3 overflow-hidden ${
                         message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
                       }`}
                     >
-                      <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+                      <p className="text-sm whitespace-pre-wrap break-words overflow-wrap-anywhere">{message.content}</p>
                       <p className="text-xs opacity-60 mt-1">
                         {message.timestamp.toLocaleTimeString([], {
                           hour: '2-digit',
