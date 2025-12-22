@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -24,6 +25,10 @@ import {
   Check,
   XCircle,
   Trash2,
+  ExternalLink,
+  Copy,
+  Calendar,
+  Navigation,
 } from 'lucide-react';
 
 interface PendingAction {
@@ -34,7 +39,8 @@ interface PendingAction {
 
 type ChatAction =
   | { type: 'open_link'; label: string; url: string }
-  | { type: 'copy_to_clipboard'; label: string; text: string };
+  | { type: 'copy_to_clipboard'; label: string; text: string }
+  | { type: 'navigate'; label: string; path: string; url: string };
 
 interface Message {
   id: string;
@@ -43,6 +49,7 @@ interface Message {
   timestamp: Date;
   pendingConfirmation?: PendingAction;
   actions?: ChatAction[];
+  actionsSummary?: string;
 }
 
 // Custom event for AI actions that require UI refresh
@@ -54,6 +61,7 @@ export function emitAIActionEvent(actionType: string) {
 
 const HackerBuddy = () => {
   const { user } = useAuth();
+  const navigate = useNavigate();
   const [isOpen, setIsOpen] = useState(false);
   const [messages, setMessages] = useState<Message[]>([]);
   const [input, setInput] = useState('');
@@ -74,15 +82,13 @@ const HackerBuddy = () => {
     }
   }, []);
 
-  // Execute browser actions (open links, copy to clipboard, etc.)
+  // Execute browser actions (open links, copy to clipboard, navigate, etc.)
   const executeAction = useCallback(
-    (action: { type: string; url?: string; text?: string }) => {
+    (action: { type: string; url?: string; text?: string; path?: string }) => {
       switch (action.type) {
         case 'open_link':
           if (action.url) {
             const opened = window.open(action.url, '_blank', 'noopener,noreferrer');
-            // Some browsers block window.open when it happens after async work.
-            // If blocked, the chat will still render an "Open" button + URL for manual click.
             if (!opened) {
               toast.info('Popup blocked — use the Open button in chat');
             }
@@ -101,9 +107,15 @@ const HackerBuddy = () => {
               });
           }
           break;
+        case 'navigate':
+          if (action.path) {
+            navigate(action.path);
+            toast.success(`Navigated to ${action.path}`);
+          }
+          break;
       }
     },
-    []
+    [navigate]
   );
 
   const extractChatActions = useCallback((toolResults: any[] | undefined): ChatAction[] => {
@@ -126,12 +138,28 @@ const HackerBuddy = () => {
       if (action.type === 'copy_to_clipboard' && typeof action.text === 'string') {
         actions.push({ type: 'copy_to_clipboard', label: 'Copy link', text: action.text });
       }
+
+      if (action.type === 'navigate' && typeof action.path === 'string') {
+        actions.push({ 
+          type: 'navigate', 
+          label: 'Go to page', 
+          path: action.path,
+          url: action.url || action.path,
+        });
+      }
     }
 
     // Dedupe
     const seen = new Set<string>();
     return actions.filter((a) => {
-      const key = a.type === 'open_link' ? `open:${a.url}` : `copy:${a.text}`;
+      let key: string;
+      if (a.type === 'open_link') {
+        key = `open:${a.url}`;
+      } else if (a.type === 'copy_to_clipboard') {
+        key = `copy:${a.text}`;
+      } else {
+        key = `navigate:${a.path}`;
+      }
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
@@ -673,36 +701,63 @@ const HackerBuddy = () => {
                       </p>
 
                       {message.role === 'assistant' && message.actions?.length ? (
-                        <div className="mt-2 flex flex-wrap gap-2">
-                          {message.actions.map((a, idx) => {
-                            if (a.type === 'open_link') {
-                              return (
-                                <Button key={`${a.type}-${idx}`} size="sm" variant="secondary" asChild>
-                                  <a href={a.url} target="_blank" rel="noreferrer">
+                        <div className="mt-3 p-2 bg-background/50 rounded-lg border border-border/50">
+                          <p className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                            ⚡ Actions ({message.actions.length})
+                          </p>
+                          <div className="flex flex-wrap gap-2">
+                            {message.actions.map((a, idx) => {
+                              if (a.type === 'open_link') {
+                                const isCalendar = a.url.includes('calendar.google.com');
+                                return (
+                                  <Button key={`${a.type}-${idx}`} size="sm" variant="secondary" className="gap-1" asChild>
+                                    <a href={a.url} target="_blank" rel="noreferrer">
+                                      {isCalendar ? <Calendar className="h-3 w-3" /> : <ExternalLink className="h-3 w-3" />}
+                                      {a.label}
+                                    </a>
+                                  </Button>
+                                );
+                              }
+
+                              if (a.type === 'copy_to_clipboard') {
+                                return (
+                                  <Button
+                                    key={`${a.type}-${idx}`}
+                                    size="sm"
+                                    variant="outline"
+                                    className="gap-1"
+                                    onClick={() => executeAction({ type: 'copy_to_clipboard', text: a.text })}
+                                  >
+                                    <Copy className="h-3 w-3" />
                                     {a.label}
-                                  </a>
-                                </Button>
-                              );
-                            }
+                                  </Button>
+                                );
+                              }
 
-                            return (
-                              <Button
-                                key={`${a.type}-${idx}`}
-                                size="sm"
-                                variant="outline"
-                                onClick={() => executeAction({ type: 'copy_to_clipboard', text: a.text })}
-                              >
-                                {a.label}
-                              </Button>
-                            );
-                          })}
+                              if (a.type === 'navigate') {
+                                return (
+                                  <Button
+                                    key={`${a.type}-${idx}`}
+                                    size="sm"
+                                    variant="default"
+                                    className="gap-1"
+                                    onClick={() => executeAction({ type: 'navigate', path: a.path })}
+                                  >
+                                    <Navigation className="h-3 w-3" />
+                                    {a.label}
+                                  </Button>
+                                );
+                              }
+
+                              return null;
+                            })}
+                          </div>
+                          {message.actions.some((a) => a.type === 'copy_to_clipboard') && (
+                            <p className="mt-2 text-xs text-muted-foreground break-all">
+                              {(message.actions.find((a) => a.type === 'copy_to_clipboard') as { text: string } | undefined)?.text}
+                            </p>
+                          )}
                         </div>
-                      ) : null}
-
-                      {message.role === 'assistant' && message.actions?.some((a) => a.type === 'copy_to_clipboard') ? (
-                        <p className="mt-2 text-xs text-muted-foreground break-all">
-                          {(message.actions.find((a) => a.type === 'copy_to_clipboard') as any)?.text}
-                        </p>
                       ) : null}
 
                       <p className="text-xs opacity-60 mt-1">
