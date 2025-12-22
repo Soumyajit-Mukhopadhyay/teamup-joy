@@ -1680,7 +1680,11 @@ async function executeToolCall(
         result: {
           hackathon: h.name,
           calendar_link: calendarUrl,
-          message: `Here's the Google Calendar link for "${h.name}": ${calendarUrl}`,
+          message: `📅 Opening Google Calendar to add "${h.name}"...`,
+          action: {
+            type: "open_link",
+            url: calendarUrl,
+          },
         },
       };
     }
@@ -1700,7 +1704,6 @@ async function executeToolCall(
       }
 
       const h = res.match;
-      // Generate the app's hackathon page URL
       const shareUrl = `https://hackerbuddy.lovable.app/hackathon/${h.slug}`;
 
       return {
@@ -1708,9 +1711,11 @@ async function executeToolCall(
           hackathon: h.name,
           share_link: shareUrl,
           official_url: h.url || null,
-          message: h.url 
-            ? `Share link for "${h.name}": ${shareUrl}\nOfficial website: ${h.url}`
-            : `Share link for "${h.name}": ${shareUrl}`,
+          message: `📋 Copied share link for "${h.name}" to clipboard!`,
+          action: {
+            type: "copy_to_clipboard",
+            text: shareUrl,
+          },
         },
       };
     }
@@ -1731,12 +1736,17 @@ async function executeToolCall(
 
       const h = res.match;
       if (!h.url) {
+        const detailsPage = `https://hackerbuddy.lovable.app/hackathon/${h.slug}`;
         return {
           result: {
             hackathon: h.name,
             has_url: false,
-            message: `The official website URL for "${h.name}" is not yet available. The registration link will be updated soon. You can check back later or view the hackathon details page.`,
-            details_page: `https://hackerbuddy.lovable.app/hackathon/${h.slug}`,
+            message: `The official website for "${h.name}" is not yet available. Opening the hackathon details page instead...`,
+            details_page: detailsPage,
+            action: {
+              type: "open_link",
+              url: detailsPage,
+            },
           },
         };
       }
@@ -1746,7 +1756,11 @@ async function executeToolCall(
           hackathon: h.name,
           has_url: true,
           url: h.url,
-          message: `Official website for "${h.name}": ${h.url}`,
+          message: `🔗 Opening "${h.name}" website...`,
+          action: {
+            type: "open_link",
+            url: h.url,
+          },
         },
       };
     }

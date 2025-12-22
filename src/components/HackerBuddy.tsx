@@ -69,6 +69,27 @@ const HackerBuddy = () => {
     }
   }, []);
 
+  // Execute browser actions (open links, copy to clipboard, etc.)
+  const executeAction = useCallback((action: { type: string; url?: string; text?: string }) => {
+    switch (action.type) {
+      case 'open_link':
+        if (action.url) {
+          window.open(action.url, '_blank', 'noopener,noreferrer');
+        }
+        break;
+      case 'copy_to_clipboard':
+        if (action.text) {
+          navigator.clipboard.writeText(action.text).then(() => {
+            toast.success('Link copied to clipboard!');
+          }).catch((err) => {
+            console.error('Failed to copy:', err);
+            toast.error('Failed to copy link');
+          });
+        }
+        break;
+    }
+  }, []);
+
   // Load messages from database on mount
   useEffect(() => {
     if (user && isOpen) {
@@ -453,6 +474,15 @@ const HackerBuddy = () => {
         // If an action was completed, emit event for UI refresh
         if (data.actionCompleted) {
           emitAIActionEvent(data.actionCompleted);
+        }
+
+        // Execute any browser actions from tool results
+        if (data.toolResults) {
+          for (const tr of data.toolResults) {
+            if (tr?.action) {
+              executeAction(tr.action);
+            }
+          }
         }
 
         const responseText: string = data.response || "I'm not sure how to help with that.";
