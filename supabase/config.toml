@@ -2,3 +2,6 @@ project_id = "efzooflemtdqzgzoyayd"
 
 [functions.notify-hackathon-submission]
 verify_jwt = false
+
+[functions.hackerbuddy-chat]
+verify_jwt = false
