@@ -1911,33 +1911,34 @@ CURRENT USER (YOU ALREADY KNOW THIS):
 - Handle: @${profile?.userid || "unknown"}
 
 ═══════════════════════════════════════════════════════════════
-MULTI-TASK EXECUTION (CRITICAL - READ CAREFULLY)
+⚠️ CRITICAL: TASK COUNTING - READ THIS VERY CAREFULLY ⚠️
 ═══════════════════════════════════════════════════════════════
 
-When a user gives you MULTIPLE tasks in ONE message, you MUST:
+STEP 1: COUNT EACH DISTINCT TASK SEPARATELY
+When parsing a user request, identify EACH individual action:
 
-1. **IDENTIFY ALL TASKS**: Parse the entire request and identify EVERY distinct task.
-   Example: "Create teams team1 and team2 for L'Oréal Brandstorm and add a hackathon named TestHack"
-   → Task 1: Create team "team1" for L'Oréal Brandstorm
-   → Task 2: Create team "team2" for L'Oréal Brandstorm  
-   → Task 3: Submit new hackathon "TestHack"
+"Create team1 and team2 for X and add hackathon Y" = 3 TASKS:
+  1. create_team(name="team1", hackathon="X")
+  2. create_team(name="team2", hackathon="X")
+  3. submit_hackathon(name="Y", ...)
 
-2. **GATHER ALL INFO FIRST**: Before executing ANY task, collect ALL required info:
-   - For create_team: hackathon name, team name
-   - For submit_hackathon: name, start_date, end_date, location, region
-   - For send_friend_request: user identifier
-   - etc.
+"Remove friend and send request again" = 2 TASKS:
+  1. remove_friend(user="...")
+  2. send_friend_request(user="...")
 
-3. **ASK ONCE FOR MISSING INFO**: If ANY info is missing, ask for EVERYTHING at once:
-   "To complete your request, I need:
-   - Start date for TestHack
-   - End date for TestHack
-   - Location and region for TestHack"
+"Send friend request to user X" = 1 TASK:
+  1. send_friend_request(user="X")
 
-4. **EXECUTE ALL TOOLS**: Once you have all info, call ALL necessary tools in your response.
-   The system will queue them and execute sequentially after user confirms.
+STEP 2: CALL EXACTLY THE NUMBER OF TOOLS AS TASKS
+- 1 task = 1 tool call
+- 2 tasks = 2 tool calls  
+- 3 tasks = 3 tool calls
+- NEVER call a tool more than once for the same task
+- NEVER call fewer tools than tasks identified
 
-5. **NEVER SKIP TASKS**: If user asks for 2 teams AND a hackathon, you must create 2 teams AND submit the hackathon.
+STEP 3: IF INFO IS MISSING, ASK FOR IT ALL AT ONCE
+- Missing hackathon dates/location → ask before calling any tools
+- Do NOT skip any task - ask for missing info for ALL tasks
 
 ═══════════════════════════════════════════════════════════════
 SECURITY RULES
@@ -1986,23 +1987,24 @@ You CAN submit hackathons for admin approval. Required fields:
 Optional: description, url, organizer
 
 ═══════════════════════════════════════════════════════════════
-EXAMPLES
+EXAMPLES WITH CORRECT TOOL COUNTS
 ═══════════════════════════════════════════════════════════════
 
-Example 1 - Multi-team creation:
-User: "Create team1 and team2 for L'Oréal Brandstorm"
-You: Call create_team twice with both team names → both get queued
+Example 1 - "Create team1 and team2 for L'Oréal Brandstorm"
+→ 2 TASKS → Call create_team TWICE (once for team1, once for team2)
 
-Example 2 - Teams + Hackathon:
-User: "Create 2 teams team3 and team4 for L'Oréal and add hackathon unstopDummy"
-You: 
-1. Identify: 3 tasks (2 teams + 1 hackathon)
-2. Missing info for hackathon → ASK: "I'll create team3 and team4 for L'Oréal Brandstorm. For the new hackathon 'unstopDummy', I need: start date, end date, location, region."
-3. After user provides → Call all 3 tools
+Example 2 - "Create teams team3 and team4 for L'Oréal and add hackathon unstopDummy"  
+→ 3 TASKS:
+  - Task 1: create_team(name="team3", hackathon_query="L'Oréal Brandstorm")
+  - Task 2: create_team(name="team4", hackathon_query="L'Oréal Brandstorm")
+  - Task 3: submit_hackathon(name="unstopDummy", ...) - BUT need dates/location first!
+→ ASK: "I need start date, end date, location, and region for 'unstopDummy'"
 
-Example 3 - Remove and re-add:
-User: "Remove friend X and send new request"
-You: Call remove_friend, then send_friend_request → both execute in sequence`;
+Example 3 - "Remove friend X and send new request"
+→ 2 TASKS → Call remove_friend, then send_friend_request
+
+Example 4 - "Send friend request to John"
+→ 1 TASK → Call send_friend_request ONCE only`;
 
     if (existingSummary?.summary) {
       systemPrompt += `\n\nPrevious conversation summary:\n${existingSummary.summary}`;
@@ -2066,42 +2068,73 @@ You: Call remove_friend, then send_friend_request → both execute in sequence`;
       );
     }
 
-    // Call AI with tools - with retry logic for rate limits
+    // Call AI with tools - with retry logic and Perplexity fallback
+    const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
+    
     const callAIWithRetry = async (body: any, maxRetries = 3): Promise<Response> => {
+      // Try Lovable AI first
       for (let attempt = 0; attempt < maxRetries; attempt++) {
-        const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${LOVABLE_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify(body),
-        });
+        try {
+          const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${LOVABLE_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify(body),
+          });
 
-        if (response.ok) {
-          return response;
-        }
-
-        if (response.status === 429) {
-          const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 500; // Exponential backoff with jitter
-          console.log(`Rate limited, retrying in ${waitTime}ms (attempt ${attempt + 1}/${maxRetries})`);
-          
-          if (attempt < maxRetries - 1) {
-            await new Promise(resolve => setTimeout(resolve, waitTime));
-            continue;
+          if (response.ok) {
+            return response;
           }
-        }
 
-        // For non-429 errors or final 429 failure, throw
-        const errorText = await response.text();
-        console.error("AI API error:", response.status, errorText);
-        
-        if (response.status === 429) {
-          throw new Error("RATE_LIMITED");
+          if (response.status === 429) {
+            const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 500;
+            console.log(`Lovable AI rate limited, retrying in ${waitTime}ms (attempt ${attempt + 1}/${maxRetries})`);
+            
+            if (attempt < maxRetries - 1) {
+              await new Promise(resolve => setTimeout(resolve, waitTime));
+              continue;
+            }
+          } else {
+            const errorText = await response.text();
+            console.error("Lovable AI error:", response.status, errorText);
+            break; // Try fallback
+          }
+        } catch (e) {
+          console.error("Lovable AI request failed:", e);
+          break; // Try fallback
         }
-        throw new Error("AI service error");
       }
-      throw new Error("Max retries exceeded");
+
+      // Fallback to Perplexity for non-tool-calling requests
+      if (PERPLEXITY_API_KEY && !body.tools) {
+        console.log("Falling back to Perplexity API...");
+        try {
+          const perplexityResponse = await fetch("https://api.perplexity.ai/chat/completions", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${PERPLEXITY_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "sonar",
+              messages: body.messages,
+              stream: body.stream || false,
+            }),
+          });
+
+          if (perplexityResponse.ok) {
+            console.log("Perplexity fallback successful");
+            return perplexityResponse;
+          }
+          console.error("Perplexity fallback failed:", perplexityResponse.status);
+        } catch (e) {
+          console.error("Perplexity request failed:", e);
+        }
+      }
+
+      throw new Error("RATE_LIMITED");
     };
 
     let aiResponse: Response;
