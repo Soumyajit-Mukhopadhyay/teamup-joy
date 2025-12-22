@@ -143,7 +143,7 @@ const tools = [
     function: {
       name: "create_team",
       description:
-        "Create a new team for a hackathon. Hackathon can be provided as slug/id/name (partial ok). REQUIRES USER CONFIRMATION.",
+        "Create a new team for a hackathon. Hackathon can be provided as slug/id/name (partial ok). Ask user about 'looking for teammates' option. REQUIRES USER CONFIRMATION.",
       parameters: {
         type: "object",
         properties: {
@@ -152,6 +152,15 @@ const tools = [
             type: "string",
             description:
               "Hackathon slug/id/name (partial ok). If omitted, use the currently-open hackathon page if available.",
+          },
+          looking_for_teammates: {
+            type: "boolean",
+            description: "Whether the team is looking for teammates. Ask user if they want this option.",
+          },
+          looking_visibility: {
+            type: "string",
+            enum: ["anyone", "friends_only"],
+            description: "Who can see the team is looking for teammates. 'anyone' = visible to all, 'friends_only' = only friends (and notifies friends).",
           },
         },
         required: ["team_name"],
@@ -1277,11 +1286,19 @@ async function executeToolCall(
         return { result: { error: `A team named "${teamNameTrimmed}" already exists for "${hackathon.name}". Please choose a different name.` } };
       }
 
+      const lookingForTeammates = args.looking_for_teammates || false;
+      const lookingVisibility = args.looking_visibility || "anyone";
+
       if (!pendingConfirmation) {
+        let confirmMsg = `I'll create a team called "${teamNameTrimmed}" for "${hackathon.name}"`;
+        if (lookingForTeammates) {
+          confirmMsg += ` with "Looking for Teammates" enabled (${lookingVisibility === 'friends_only' ? 'friends only' : 'anyone can see'})`;
+        }
+        confirmMsg += ". Should I proceed?";
         return {
           result: null,
           needsConfirmation: true,
-          confirmationMessage: `I'll create a team called "${teamNameTrimmed}" for "${hackathon.name}". Should I proceed?`,
+          confirmationMessage: confirmMsg,
         };
       }
 
@@ -1291,6 +1308,8 @@ async function executeToolCall(
           name: teamNameTrimmed,
           hackathon_id: hackathon.slug,
           created_by: userId,
+          looking_for_teammates: lookingForTeammates,
+          looking_visibility: lookingVisibility,
         })
         .select()
         .single();
@@ -1310,10 +1329,47 @@ async function executeToolCall(
         { onConflict: "user_id,hackathon_id" }
       );
 
+      // If looking_for_teammates with friends_only, notify friends
+      if (lookingForTeammates && lookingVisibility === "friends_only") {
+        // Get user's friends
+        const { data: friendships } = await supabase
+          .from("friends")
+          .select("friend_id, user_id")
+          .or(`user_id.eq.${userId},friend_id.eq.${userId}`);
+
+        if (friendships && friendships.length > 0) {
+          const friendIds = friendships.map((f: { user_id: string; friend_id: string }) => 
+            f.user_id === userId ? f.friend_id : f.user_id
+          );
+          
+          // Get hackathon name for notification
+          const notifMessage = `${userProfile?.username || 'A user'} is looking for teammates for "${teamNameTrimmed}" in ${hackathon.name}`;
+          
+          // Insert notifications for all friends
+          const notifications = friendIds.map((friendId: string) => ({
+            user_id: friendId,
+            type: "looking_for_teammates",
+            title: "Friend Looking for Teammates",
+            message: notifMessage,
+            reference_id: team.id,
+            reference_type: "team",
+          }));
+
+          await supabase.from("notifications").insert(notifications);
+        }
+      }
+
+      let successMsg = `Team "${teamNameTrimmed}" created for ${hackathon.name}. You are now participating in this hackathon!`;
+      if (lookingForTeammates) {
+        successMsg += lookingVisibility === "friends_only" 
+          ? " Your friends have been notified."
+          : " Others can now see your team is looking for members.";
+      }
+
       return {
         result: {
           success: true,
-          message: `Team "${teamNameTrimmed}" created for ${hackathon.name}. You are now participating in this hackathon!`,
+          message: successMsg,
           team_id: team.id,
           hackathon_slug: hackathon.slug,
         },
