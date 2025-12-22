@@ -206,17 +206,33 @@ const HackerBuddy = () => {
     if (data) {
       // Reverse to show oldest first (chronological order for display)
       setMessages(
-        data.reverse().map((m) => ({
-          id: m.id,
-          role: m.role as 'user' | 'assistant',
-          content: m.content,
-          timestamp: new Date(m.created_at),
-        }))
+        data
+          .reverse()
+          .map((m) => {
+            const toolResults = (m as any).tool_results as any[] | null | undefined;
+            const normalizedToolResults = Array.isArray(toolResults)
+              ? toolResults
+              : toolResults
+                ? [toolResults]
+                : undefined;
+
+            return {
+              id: m.id,
+              role: m.role as 'user' | 'assistant',
+              content: m.content,
+              timestamp: new Date(m.created_at),
+              actions: m.role === 'assistant' ? extractChatActions(normalizedToolResults) : undefined,
+            } as Message;
+          })
       );
     }
   };
 
-  const saveMessage = async (role: 'user' | 'assistant', content: string) => {
+  const saveMessage = async (
+    role: 'user' | 'assistant',
+    content: string,
+    options?: { toolCalls?: any[] | null; toolResults?: any[] | null }
+  ) => {
     if (!user) return;
 
     const { data, error } = await supabase
@@ -225,6 +241,8 @@ const HackerBuddy = () => {
         user_id: user.id,
         role,
         content,
+        tool_calls: options?.toolCalls ?? null,
+        tool_results: options?.toolResults ?? null,
       })
       .select()
       .single();
@@ -347,7 +365,7 @@ const HackerBuddy = () => {
           actions: assistantActions,
         };
         setMessages((prev) => [...prev, assistantMessage]);
-        await saveMessage('assistant', result.response);
+        await saveMessage('assistant', result.response, { toolResults: result.toolResults || null });
 
         // Emit event for UI refresh
         if (result.actionCompleted) {
@@ -587,7 +605,7 @@ const HackerBuddy = () => {
           actions: assistantActions,
         };
         setMessages((prev) => [...prev, assistantMessage]);
-        await saveMessage('assistant', responseText);
+        await saveMessage('assistant', responseText, { toolResults: data.toolResults || null });
       }
     } catch (error) {
       console.error('HackerBuddy error:', error);
@@ -692,11 +710,11 @@ const HackerBuddy = () => {
                     className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
                   >
                     <div
-                      className={`max-w-[80%] rounded-lg p-3 overflow-hidden ${
+                      className={`max-w-[80%] rounded-lg p-3 overflow-visible ${
                         message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
                       }`}
                     >
-                      <p className="text-sm whitespace-pre-wrap break-words overflow-wrap-anywhere">
+                      <p className="text-sm whitespace-pre-wrap break-all">
                         {message.content}
                       </p>
 
