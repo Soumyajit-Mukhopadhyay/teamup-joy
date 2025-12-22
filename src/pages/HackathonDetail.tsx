@@ -1,5 +1,5 @@
 import { useParams, useNavigate, Link } from 'react-router-dom';
-import { hackathons } from '@/data/hackathons';
+import { useHackathon } from '@/hooks/useHackathons';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -13,10 +13,22 @@ const HackathonDetail = () => {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
-  const { teams, loading: teamsLoading, canCreateMoreTeams, teamCount } = useUserTeamsForHackathon(id);
   
-  const hackathon = hackathons.find(h => h.id === id);
+  // Fetch hackathon from database
+  const { hackathon, loading } = useHackathon(id);
+  const { teams, loading: teamsLoading, canCreateMoreTeams, teamCount } = useUserTeamsForHackathon(hackathon?.slug || hackathon?.id);
   
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-background">
+        <Header />
+        <main className="container py-16 text-center">
+          <p className="text-muted-foreground">Loading...</p>
+        </main>
+      </div>
+    );
+  }
+
   if (!hackathon) {
     return (
       <div className="min-h-screen bg-background">
@@ -75,7 +87,7 @@ const HackathonDetail = () => {
       toast.error('Maximum 5 teams per hackathon reached');
       return;
     }
-    navigate(`/hackathon/${hackathon.id}/team`);
+    navigate(`/hackathon/${hackathon.slug}/team`);
   };
 
   const handleVisitWebsite = () => {

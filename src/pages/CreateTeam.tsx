@@ -6,9 +6,9 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
-import { hackathons } from '@/data/hackathons';
+import { useHackathon } from '@/hooks/useHackathons';
 import { toast } from 'sonner';
-import { Users, Search, Plus, UserPlus, X, ArrowLeft } from 'lucide-react';
+import { Users, Search, UserPlus, X, ArrowLeft } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { useUserTeamsForHackathon } from '@/hooks/useUserTeamsForHackathon';
 
@@ -22,8 +22,11 @@ interface SearchResult {
 const CreateTeam = () => {
   const { hackathonId } = useParams();
   const navigate = useNavigate();
-  const { user, profile, loading: authLoading } = useAuth();
-  const { teamCount, canCreateMoreTeams } = useUserTeamsForHackathon(hackathonId);
+  const { user, loading: authLoading } = useAuth();
+  
+  // Fetch hackathon from database
+  const { hackathon, loading: hackathonLoading } = useHackathon(hackathonId);
+  const { teamCount, canCreateMoreTeams } = useUserTeamsForHackathon(hackathon?.slug || hackathon?.id);
 
   const [teamName, setTeamName] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
@@ -31,8 +34,6 @@ const CreateTeam = () => {
   const [selectedMembers, setSelectedMembers] = useState<SearchResult[]>([]);
   const [loading, setLoading] = useState(false);
   const [searching, setSearching] = useState(false);
-
-  const hackathon = hackathons.find(h => h.id === hackathonId);
 
   useEffect(() => {
     if (authLoading) return;
@@ -97,13 +98,13 @@ const CreateTeam = () => {
     setSelectedMembers(prev => prev.filter(m => m.user_id !== userId));
   };
 
-  const addHackathonParticipation = async (userId: string, hackathonId: string) => {
+  const addHackathonParticipation = async (userId: string, hackathonIdentifier: string) => {
     // Check if participation already exists
     const { data: existing } = await supabase
       .from('hackathon_participations')
       .select('id')
       .eq('user_id', userId)
-      .eq('hackathon_id', hackathonId)
+      .eq('hackathon_id', hackathonIdentifier)
       .maybeSingle();
 
     if (!existing) {
@@ -111,7 +112,7 @@ const CreateTeam = () => {
         .from('hackathon_participations')
         .insert({
           user_id: userId,
-          hackathon_id: hackathonId,
+          hackathon_id: hackathonIdentifier,
           status: 'current',
         });
     }
@@ -123,7 +124,7 @@ const CreateTeam = () => {
       return;
     }
 
-    if (!user || !hackathonId) return;
+    if (!user || !hackathon) return;
 
     if (!canCreateMoreTeams) {
       toast.error('Maximum 5 teams per hackathon reached');
@@ -132,13 +133,16 @@ const CreateTeam = () => {
 
     setLoading(true);
 
+    // Use slug as the hackathon identifier for teams
+    const hackathonIdentifier = hackathon.slug;
+
     try {
       // Create the team
       const { data: team, error: teamError } = await supabase
         .from('teams')
         .insert({
           name: teamName,
-          hackathon_id: hackathonId,
+          hackathon_id: hackathonIdentifier,
           created_by: user.id,
         })
         .select()
@@ -159,7 +163,7 @@ const CreateTeam = () => {
       if (memberError) throw memberError;
 
       // Add hackathon participation for creator
-      await addHackathonParticipation(user.id, hackathonId);
+      await addHackathonParticipation(user.id, hackathonIdentifier);
 
       // Send team requests to selected members
       if (selectedMembers.length > 0) {
@@ -185,6 +189,17 @@ const CreateTeam = () => {
       setLoading(false);
     }
   };
+
+  if (hackathonLoading) {
+    return (
+      <div className="min-h-screen bg-background">
+        <Header />
+        <div className="container py-16 text-center">
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   if (!hackathon) {
     return (
