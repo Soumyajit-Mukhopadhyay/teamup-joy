@@ -1,5 +1,5 @@
-import { useState, useMemo } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, useMemo, useEffect } from 'react';
+import { useNavigate, useLocation } from 'react-router-dom';
 import Header from '@/components/Header';
 import HeroSection from '@/components/HeroSection';
 import FilterBar from '@/components/FilterBar';
@@ -11,6 +11,7 @@ import { useIsAdmin } from '@/hooks/useIsAdmin';
 
 const Index = () => {
   const navigate = useNavigate();
+  const location = useLocation();
   const { isAdmin } = useIsAdmin();
   const [view, setView] = useState<'grid' | 'calendar'>('grid');
   const [search, setSearch] = useState('');
@@ -19,6 +20,14 @@ const Index = () => {
 
   // Fetch hackathons from database (excludes expired by default)
   const { hackathons, loading, refetch } = useHackathons({ includeExpired: false });
+
+  // Listen for ?view=calendar query param to auto-switch to calendar view
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    if (params.get('view') === 'calendar') {
+      setView('calendar');
+    }
+  }, [location.search]);
 
   const filteredHackathons = useMemo(() => {
     return hackathons.filter(h => {
