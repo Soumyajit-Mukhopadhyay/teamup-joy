@@ -117,7 +117,7 @@ const HackerBuddy = () => {
 
   const sendMessage = async (e?: React.FormEvent, confirmAction?: boolean) => {
     e?.preventDefault();
-    
+
     if (!user) {
       toast.error('Please sign in to use HackerBuddy');
       return;
@@ -133,7 +133,7 @@ const HackerBuddy = () => {
       content: messageText,
       timestamp: new Date(),
     };
-    
+
     if (!confirmAction) {
       setMessages(prev => [...prev, userMessage]);
       setInput('');
@@ -142,18 +142,21 @@ const HackerBuddy = () => {
 
     setIsLoading(true);
 
+    const pathname = window.location.pathname || '';
+    const hackathonMatch = pathname.match(/^\/hackathon\/([^/]+)$/);
+    const currentHackathonId = hackathonMatch?.[1];
+
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      
       const response = await supabase.functions.invoke('hackerbuddy-chat', {
         body: {
           message: messageText,
-          conversationHistory: messages.slice(-10).map(m => ({
+          conversationHistory: messages.slice(-20).map(m => ({
             role: m.role,
             content: m.content,
           })),
           pendingConfirmation: confirmAction && pendingAction ? true : false,
           confirmedAction: confirmAction ? pendingAction : undefined,
+          currentHackathonId,
         },
       });
 
@@ -174,17 +177,46 @@ const HackerBuddy = () => {
         setPendingAction(null);
       }
 
-      // Add assistant response
-      const assistantMessage: Message = {
-        id: `temp-${Date.now()}-response`,
-        role: 'assistant',
-        content: data.response,
-        timestamp: new Date(),
-        pendingConfirmation: data.pendingConfirmation,
-      };
+      const responseText: string = data.response || "I'm not sure how to help with that.";
 
-      setMessages(prev => [...prev, assistantMessage]);
-      await saveMessage('assistant', data.response);
+      // Add assistant response (quick streaming-like reveal for long messages)
+      const assistantId = `temp-${Date.now()}-response`;
+      const shouldAnimate = !data.pendingConfirmation && responseText.length > 180;
+
+      if (!shouldAnimate) {
+        const assistantMessage: Message = {
+          id: assistantId,
+          role: 'assistant',
+          content: responseText,
+          timestamp: new Date(),
+          pendingConfirmation: data.pendingConfirmation,
+        };
+        setMessages(prev => [...prev, assistantMessage]);
+        await saveMessage('assistant', responseText);
+      } else {
+        const assistantMessage: Message = {
+          id: assistantId,
+          role: 'assistant',
+          content: '',
+          timestamp: new Date(),
+        };
+        setMessages(prev => [...prev, assistantMessage]);
+
+        const chunkSize = 18;
+        let i = 0;
+        const interval = window.setInterval(() => {
+          i += chunkSize;
+          const next = responseText.slice(0, i);
+          setMessages(prev =>
+            prev.map(m => (m.id === assistantId ? { ...m, content: next } : m))
+          );
+          if (i >= responseText.length) {
+            window.clearInterval(interval);
+          }
+        }, 25);
+
+        await saveMessage('assistant', responseText);
+      }
 
     } catch (error) {
       console.error('HackerBuddy error:', error);

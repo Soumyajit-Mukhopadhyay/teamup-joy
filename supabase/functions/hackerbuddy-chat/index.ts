@@ -12,12 +12,17 @@ const tools = [
     type: "function",
     function: {
       name: "search_hackathons",
-      description: "Search for hackathons in the database by name, region, or tags",
+      description:
+        "Search approved hackathons in the database by partial name/description, region, or tags.",
       parameters: {
         type: "object",
         properties: {
-          query: { type: "string", description: "Search query for hackathon name or description" },
+          query: {
+            type: "string",
+            description: "Partial name/description/tag query (case-insensitive)",
+          },
           region: { type: "string", description: "Filter by region" },
+          limit: { type: "number", description: "Max results (default 10)" },
         },
         required: [],
       },
@@ -26,15 +31,41 @@ const tools = [
   {
     type: "function",
     function: {
-      name: "web_search",
-      description: "Search the web for information about hackathons, technologies, or any topic the user asks about",
+      name: "get_hackathon_link",
+      description:
+        "Get the official website link for a hackathon from the database. Supports partial name. If multiple matches are found, return choices for the user to pick.",
       parameters: {
         type: "object",
         properties: {
-          query: { type: "string", description: "The search query" },
+          query: { type: "string", description: "Hackathon name/slug/id (partial ok)" },
         },
         required: ["query"],
       },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "search_users",
+      description:
+        "Search users by username, userid, or UUID (partial & case-insensitive). Returns matches for disambiguation.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "username, userid, or UUID (partial ok)" },
+          limit: { type: "number", description: "Max results (default 5)" },
+        },
+        required: ["query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_current_participations",
+      description:
+        "Get the current user's current hackathon participations (and matching hackathon details when available).",
+      parameters: { type: "object", properties: {}, required: [] },
     },
   },
   {
@@ -57,13 +88,17 @@ const tools = [
     type: "function",
     function: {
       name: "send_friend_request",
-      description: "Send a friend request to another user. REQUIRES USER CONFIRMATION.",
+      description:
+        "Send a friend request to another user by username/userid/UUID. REQUIRES USER CONFIRMATION.",
       parameters: {
         type: "object",
         properties: {
-          to_userid: { type: "string", description: "The unique userid (not UUID) of the person to send request to" },
+          user_query: {
+            type: "string",
+            description: "username, userid, or UUID (partial ok)",
+          },
         },
-        required: ["to_userid"],
+        required: ["user_query"],
       },
     },
   },
@@ -71,14 +106,19 @@ const tools = [
     type: "function",
     function: {
       name: "create_team",
-      description: "Create a new team for a hackathon. REQUIRES USER CONFIRMATION.",
+      description:
+        "Create a new team for a hackathon. Hackathon can be provided as slug/id/name (partial ok). REQUIRES USER CONFIRMATION.",
       parameters: {
         type: "object",
         properties: {
           team_name: { type: "string", description: "Name of the team" },
-          hackathon_slug: { type: "string", description: "The slug/id of the hackathon" },
+          hackathon_query: {
+            type: "string",
+            description:
+              "Hackathon slug/id/name (partial ok). If omitted, use the currently-open hackathon page if available.",
+          },
         },
-        required: ["team_name", "hackathon_slug"],
+        required: ["team_name"],
       },
     },
   },
@@ -86,14 +126,33 @@ const tools = [
     type: "function",
     function: {
       name: "invite_to_team",
-      description: "Invite a user to join a team. REQUIRES USER CONFIRMATION.",
+      description:
+        "Invite a user to join a team by username/userid/UUID. REQUIRES USER CONFIRMATION.",
       parameters: {
         type: "object",
         properties: {
           team_id: { type: "string", description: "UUID of the team" },
-          to_userid: { type: "string", description: "The unique userid of the person to invite" },
+          user_query: {
+            type: "string",
+            description: "username, userid, or UUID (partial ok)",
+          },
         },
-        required: ["team_id", "to_userid"],
+        required: ["team_id", "user_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "web_search",
+      description:
+        "Search the web for information about hackathons, technologies, or any topic the user asks about",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string", description: "The search query" },
+        },
+        required: ["query"],
       },
     },
   },
@@ -101,7 +160,8 @@ const tools = [
     type: "function",
     function: {
       name: "submit_hackathon",
-      description: "Submit a new hackathon for admin approval. REQUIRES USER CONFIRMATION.",
+      description:
+        "Submit a new hackathon for admin approval. REQUIRES USER CONFIRMATION.",
       parameters: {
         type: "object",
         properties: {
@@ -110,7 +170,10 @@ const tools = [
           start_date: { type: "string", description: "Start date in ISO format" },
           end_date: { type: "string", description: "End date in ISO format" },
           location: { type: "string", description: "Location (city or Online)" },
-          region: { type: "string", description: "Region (e.g., North America, Europe, Asia, Global)" },
+          region: {
+            type: "string",
+            description: "Region (e.g., North America, Europe, Asia, Global)",
+          },
           url: { type: "string", description: "Website URL" },
           organizer: { type: "string", description: "Organizer name" },
         },
@@ -167,41 +230,380 @@ async function executeToolCall(
   args: Record<string, any>,
   supabase: any,
   userId: string,
-  pendingConfirmation: boolean
+  pendingConfirmation: boolean,
+  context: { currentHackathonId?: string } = {}
 ): Promise<{ result: any; needsConfirmation?: boolean; confirmationMessage?: string }> {
-  
-  // Check if action needs confirmation and hasn't been confirmed
-  if (CONFIRMATION_REQUIRED_ACTIONS.includes(toolName) && !pendingConfirmation) {
-    let message = "";
-    switch (toolName) {
-      case "send_friend_request":
-        message = `I'll send a friend request to @${args.to_userid}. Should I proceed?`;
-        break;
-      case "create_team":
-        message = `I'll create a team called "${args.team_name}" for the hackathon. Should I proceed?`;
-        break;
-      case "invite_to_team":
-        message = `I'll send a team invitation to @${args.to_userid}. Should I proceed?`;
-        break;
-      case "submit_hackathon":
-        message = `I'll submit "${args.name}" hackathon for admin approval. Should I proceed?`;
-        break;
-    }
-    return { result: null, needsConfirmation: true, confirmationMessage: message };
-  }
+  const isUuid = (v: string) =>
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(v);
+
+  const cleanQuery = (v: unknown) =>
+    String(v ?? "")
+      .trim()
+      .replace(/^@/, "");
+
+  const resolveHackathon = async (queryRaw: string) => {
+    const query = cleanQuery(queryRaw);
+    if (!query) return { type: "none" as const, matches: [] as any[] };
+
+    // 1) Exact by slug or id
+    const exact = await supabase
+      .from("hackathons")
+      .select("id, slug, name, region, start_date, end_date, url")
+      .or(`slug.eq.${query},id.eq.${query}`)
+      .eq("status", "approved")
+      .maybeSingle();
+
+    if (exact.data) return { type: "single" as const, match: exact.data };
+
+    // 2) Partial name match
+    const { data: partial, error } = await supabase
+      .from("hackathons")
+      .select("id, slug, name, region, start_date, end_date, url")
+      .eq("status", "approved")
+      .ilike("name", `%${query}%`)
+      .order("start_date", { ascending: true })
+      .limit(5);
+
+    if (error) return { type: "error" as const, error: error.message };
+    if (!partial?.length) return { type: "none" as const, matches: [] as any[] };
+    if (partial.length === 1) return { type: "single" as const, match: partial[0] };
+
+    return { type: "many" as const, matches: partial };
+  };
+
+  const resolveUser = async (queryRaw: string) => {
+    const query = cleanQuery(queryRaw);
+    if (!query) return { type: "none" as const, matches: [] as any[] };
+
+    const limit = Math.min(Math.max(Number(args?.limit ?? 5) || 5, 1), 10);
+
+    // Build a permissive OR filter: exact UUID match OR partial userid/username
+    const orParts: string[] = [];
+    if (isUuid(query)) orParts.push(`user_id.eq.${query}`);
+    orParts.push(`userid.ilike.%${query}%`);
+    orParts.push(`username.ilike.%${query}%`);
+
+    const { data, error } = await supabase
+      .from("profiles")
+      .select("user_id, userid, username")
+      .or(orParts.join(","))
+      .limit(limit);
+
+    if (error) return { type: "error" as const, error: error.message };
+    if (!data?.length) return { type: "none" as const, matches: [] as any[] };
+    if (data.length === 1) return { type: "single" as const, match: data[0] };
+
+    return { type: "many" as const, matches: data };
+  };
 
   switch (toolName) {
     case "search_hackathons": {
       let query = supabase.from("hackathons").select("*").eq("status", "approved");
       if (args.query) {
-        query = query.or(`name.ilike.%${args.query}%,description.ilike.%${args.query}%`);
+        const q = cleanQuery(args.query);
+        query = query.or(`name.ilike.%${q}%,description.ilike.%${q}%`);
       }
       if (args.region) {
-        query = query.ilike("region", `%${args.region}%`);
+        query = query.ilike("region", `%${cleanQuery(args.region)}%`);
       }
-      const { data, error } = await query.limit(10);
+      const limit = Math.min(Math.max(Number(args.limit ?? 10) || 10, 1), 25);
+      const { data, error } = await query.limit(limit);
       if (error) return { result: { error: error.message } };
       return { result: data || [] };
+    }
+
+    case "get_hackathon_link": {
+      const res = await resolveHackathon(args.query);
+      if (res.type === "error") return { result: { error: res.error } };
+      if (res.type === "none") return { result: { error: "Hackathon not found" } };
+      if (res.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple hackathons. Which one do you mean?",
+            matches: res.matches.map((h: any) => ({
+              name: h.name,
+              slug: h.slug,
+              region: h.region,
+              start_date: h.start_date,
+              end_date: h.end_date,
+              url: h.url,
+            })),
+          },
+        };
+      }
+
+      return {
+        result: {
+          name: res.match.name,
+          slug: res.match.slug,
+          url: res.match.url || null,
+          message: res.match.url
+            ? `Official link for ${res.match.name}`
+            : `I don't have an official link saved for ${res.match.name}.`,
+        },
+      };
+    }
+
+    case "search_users": {
+      const res = await resolveUser(args.query);
+      if (res.type === "error") return { result: { error: res.error } };
+      if (res.type === "none") return { result: [] };
+      if (res.type === "many") return { result: res.matches };
+      return { result: [res.match] };
+    }
+
+    case "get_current_participations": {
+      const { data: parts, error } = await supabase
+        .from("hackathon_participations")
+        .select("hackathon_id, status, created_at")
+        .eq("user_id", userId)
+        .eq("status", "current")
+        .order("created_at", { ascending: false })
+        .limit(25);
+
+      if (error) return { result: { error: error.message } };
+      const ids = (parts || []).map((p: any) => p.hackathon_id);
+
+      // Try match hackathon rows by slug and by UUID id
+      const uuidIds = ids.filter((v: string) => isUuid(String(v)));
+      const { data: bySlug } = ids.length
+        ? await supabase
+            .from("hackathons")
+            .select("id, slug, name, start_date, end_date, region, url")
+            .in("slug", ids)
+            .eq("status", "approved")
+        : { data: [] };
+      const { data: byId } = uuidIds.length
+        ? await supabase
+            .from("hackathons")
+            .select("id, slug, name, start_date, end_date, region, url")
+            .in("id", uuidIds)
+            .eq("status", "approved")
+        : { data: [] };
+
+      const map = new Map<string, any>();
+      (bySlug || []).forEach((h: any) => map.set(h.slug, h));
+      (byId || []).forEach((h: any) => map.set(h.id, h));
+
+      return {
+        result: (parts || []).map((p: any) => ({
+          hackathon_id: p.hackathon_id,
+          status: p.status,
+          joined_at: p.created_at,
+          hackathon: map.get(p.hackathon_id) || null,
+        })),
+      };
+    }
+
+    case "get_user_teams": {
+      const { data: teamMembers } = await supabase
+        .from("team_members")
+        .select("team_id, role, is_leader")
+        .eq("user_id", userId);
+
+      if (!teamMembers?.length) return { result: [] };
+
+      const teamIds = teamMembers.map((tm: any) => tm.team_id);
+      const { data: teams } = await supabase
+        .from("teams")
+        .select("id, name, hackathon_id")
+        .in("id", teamIds);
+
+      return { result: teams || [] };
+    }
+
+    case "get_user_friends": {
+      const { data: friends } = await supabase
+        .from("friends")
+        .select("friend_id")
+        .eq("user_id", userId);
+
+      if (!friends?.length) return { result: [] };
+
+      const friendIds = friends.map((f: any) => f.friend_id);
+      const { data: profiles } = await supabase
+        .from("profiles")
+        .select("userid, username, user_id")
+        .in("user_id", friendIds);
+
+      return { result: profiles || [] };
+    }
+
+    case "send_friend_request": {
+      const who = await resolveUser(args.user_query);
+      if (who.type === "error") return { result: { error: who.error } };
+      if (who.type === "none") return { result: { error: "User not found" } };
+      if (who.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple users. Which one should I send a friend request to?",
+            matches: who.matches,
+          },
+        };
+      }
+
+      const target = who.match;
+
+      if (target.user_id === userId) {
+        return { result: { error: "You cannot send a friend request to yourself" } };
+      }
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll send a friend request to ${target.username} (@${target.userid}). Should I proceed?`,
+        };
+      }
+
+      // Check if already friends
+      const { data: existing } = await supabase
+        .from("friends")
+        .select("id")
+        .eq("user_id", userId)
+        .eq("friend_id", target.user_id)
+        .maybeSingle();
+
+      if (existing) return { result: { error: "You are already friends with this user" } };
+
+      // Check for pending request
+      const { data: pendingReq } = await supabase
+        .from("friend_requests")
+        .select("id")
+        .eq("from_user_id", userId)
+        .eq("to_user_id", target.user_id)
+        .eq("status", "pending")
+        .maybeSingle();
+
+      if (pendingReq) return { result: { error: "Friend request already pending" } };
+
+      const { error } = await supabase
+        .from("friend_requests")
+        .insert({ from_user_id: userId, to_user_id: target.user_id });
+
+      if (error) return { result: { error: error.message } };
+      return {
+        result: {
+          success: true,
+          message: `Friend request sent to ${target.username} (@${target.userid})`,
+        },
+      };
+    }
+
+    case "create_team": {
+      const hackathonQuery = cleanQuery(args.hackathon_query || "") ||
+        cleanQuery(context.currentHackathonId || "");
+
+      const resolved = await resolveHackathon(hackathonQuery);
+      if (resolved.type === "error") return { result: { error: resolved.error } };
+      if (resolved.type === "none") return { result: { error: "Hackathon not found" } };
+      if (resolved.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple hackathons. Which one should I use?",
+            matches: resolved.matches.map((h: any) => ({
+              name: h.name,
+              slug: h.slug,
+              region: h.region,
+              start_date: h.start_date,
+              end_date: h.end_date,
+              url: h.url,
+            })),
+          },
+        };
+      }
+
+      const hackathon = resolved.match;
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll create a team called "${args.team_name}" for "${hackathon.name}". Should I proceed?`,
+        };
+      }
+
+      const { data: team, error: teamError } = await supabase
+        .from("teams")
+        .insert({
+          name: args.team_name,
+          hackathon_id: hackathon.slug,
+          created_by: userId,
+        })
+        .select()
+        .single();
+
+      if (teamError) return { result: { error: teamError.message } };
+
+      await supabase.from("team_members").insert({
+        team_id: team.id,
+        user_id: userId,
+        role: "leader",
+        is_leader: true,
+      });
+
+      return {
+        result: {
+          success: true,
+          message: `Team "${args.team_name}" created for ${hackathon.name}`,
+          team_id: team.id,
+          hackathon_slug: hackathon.slug,
+        },
+      };
+    }
+
+    case "invite_to_team": {
+      // Verify user is team leader
+      const { data: membership } = await supabase
+        .from("team_members")
+        .select("is_leader, role")
+        .eq("team_id", args.team_id)
+        .eq("user_id", userId)
+        .single();
+
+      if (!membership || (!membership.is_leader && membership.role !== "leader")) {
+        return { result: { error: "You must be a team leader to invite members" } };
+      }
+
+      const who = await resolveUser(args.user_query);
+      if (who.type === "error") return { result: { error: who.error } };
+      if (who.type === "none") return { result: { error: "User not found" } };
+      if (who.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple users. Which one should I invite?",
+            matches: who.matches,
+          },
+        };
+      }
+
+      const target = who.match;
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll send a team invitation to ${target.username} (@${target.userid}). Should I proceed?`,
+        };
+      }
+
+      const { error } = await supabase.from("team_requests").insert({
+        team_id: args.team_id,
+        from_user_id: userId,
+        to_user_id: target.user_id,
+      });
+
+      if (error) return { result: { error: error.message } };
+      return {
+        result: {
+          success: true,
+          message: `Team invitation sent to ${target.username} (@${target.userid})`,
+        },
+      };
     }
 
     case "web_search": {
@@ -219,7 +621,11 @@ async function executeToolCall(
           body: JSON.stringify({
             model: "sonar",
             messages: [
-              { role: "system", content: "Provide concise, factual information. Focus on hackathon-related topics when relevant." },
+              {
+                role: "system",
+                content:
+                  "Provide concise, factual information. Focus on hackathon-related topics when relevant.",
+              },
               { role: "user", content: args.query },
             ],
           }),
@@ -231,159 +637,24 @@ async function executeToolCall(
             citations: data.citations || [],
           },
         };
-      } catch (e) {
+      } catch (_e) {
         return { result: { error: "Web search failed" } };
       }
     }
 
-    case "get_user_teams": {
-      const { data: teamMembers } = await supabase
-        .from("team_members")
-        .select("team_id, role, is_leader")
-        .eq("user_id", userId);
-      
-      if (!teamMembers?.length) return { result: [] };
-      
-      const teamIds = teamMembers.map((tm: any) => tm.team_id);
-      const { data: teams } = await supabase
-        .from("teams")
-        .select("id, name, hackathon_id")
-        .in("id", teamIds);
-      
-      return { result: teams || [] };
-    }
-
-    case "get_user_friends": {
-      const { data: friends } = await supabase
-        .from("friends")
-        .select("friend_id")
-        .eq("user_id", userId);
-      
-      if (!friends?.length) return { result: [] };
-      
-      const friendIds = friends.map((f: any) => f.friend_id);
-      const { data: profiles } = await supabase
-        .from("profiles")
-        .select("userid, username")
-        .in("user_id", friendIds);
-      
-      return { result: profiles || [] };
-    }
-
-    case "send_friend_request": {
-      // Find user by userid
-      const { data: targetUser } = await supabase
-        .from("profiles")
-        .select("user_id")
-        .eq("userid", args.to_userid)
-        .single();
-      
-      if (!targetUser) return { result: { error: `User @${args.to_userid} not found` } };
-      
-      if (targetUser.user_id === userId) {
-        return { result: { error: "You cannot send a friend request to yourself" } };
-      }
-      
-      // Check if already friends
-      const { data: existing } = await supabase
-        .from("friends")
-        .select("id")
-        .eq("user_id", userId)
-        .eq("friend_id", targetUser.user_id)
-        .maybeSingle();
-      
-      if (existing) return { result: { error: "You are already friends with this user" } };
-      
-      // Check for pending request
-      const { data: pendingReq } = await supabase
-        .from("friend_requests")
-        .select("id")
-        .eq("from_user_id", userId)
-        .eq("to_user_id", targetUser.user_id)
-        .eq("status", "pending")
-        .maybeSingle();
-      
-      if (pendingReq) return { result: { error: "Friend request already pending" } };
-      
-      const { error } = await supabase
-        .from("friend_requests")
-        .insert({ from_user_id: userId, to_user_id: targetUser.user_id });
-      
-      if (error) return { result: { error: error.message } };
-      return { result: { success: true, message: `Friend request sent to @${args.to_userid}` } };
-    }
-
-    case "create_team": {
-      // Verify hackathon exists
-      const { data: hackathon } = await supabase
-        .from("hackathons")
-        .select("id, slug, name")
-        .or(`slug.eq.${args.hackathon_slug},id.eq.${args.hackathon_slug}`)
-        .eq("status", "approved")
-        .single();
-      
-      if (!hackathon) return { result: { error: "Hackathon not found" } };
-      
-      // Create team
-      const { data: team, error: teamError } = await supabase
-        .from("teams")
-        .insert({
-          name: args.team_name,
-          hackathon_id: hackathon.slug,
-          created_by: userId,
-        })
-        .select()
-        .single();
-      
-      if (teamError) return { result: { error: teamError.message } };
-      
-      // Add creator as team leader
-      await supabase.from("team_members").insert({
-        team_id: team.id,
-        user_id: userId,
-        role: "leader",
-        is_leader: true,
-      });
-      
-      return { result: { success: true, message: `Team "${args.team_name}" created for ${hackathon.name}`, team_id: team.id } };
-    }
-
-    case "invite_to_team": {
-      // Verify user is team leader
-      const { data: membership } = await supabase
-        .from("team_members")
-        .select("is_leader, role")
-        .eq("team_id", args.team_id)
-        .eq("user_id", userId)
-        .single();
-      
-      if (!membership || (!membership.is_leader && membership.role !== "leader")) {
-        return { result: { error: "You must be a team leader to invite members" } };
-      }
-      
-      // Find target user
-      const { data: targetUser } = await supabase
-        .from("profiles")
-        .select("user_id")
-        .eq("userid", args.to_userid)
-        .single();
-      
-      if (!targetUser) return { result: { error: `User @${args.to_userid} not found` } };
-      
-      // Send team request
-      const { error } = await supabase.from("team_requests").insert({
-        team_id: args.team_id,
-        from_user_id: userId,
-        to_user_id: targetUser.user_id,
-      });
-      
-      if (error) return { result: { error: error.message } };
-      return { result: { success: true, message: `Team invitation sent to @${args.to_userid}` } };
-    }
-
     case "submit_hackathon": {
-      const slug = `${args.name.toLowerCase().replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`;
-      
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll submit "${args.name}" hackathon for admin approval. Should I proceed?`,
+        };
+      }
+
+      const slug = `${String(args.name)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")}-${Date.now()}`;
+
       const { error } = await supabase.from("hackathons").insert({
         name: args.name,
         description: args.description || "",
@@ -397,9 +668,14 @@ async function executeToolCall(
         status: "pending",
         submitted_by: userId,
       });
-      
+
       if (error) return { result: { error: error.message } };
-      return { result: { success: true, message: `Hackathon "${args.name}" submitted for approval` } };
+      return {
+        result: {
+          success: true,
+          message: `Hackathon "${args.name}" submitted for approval`,
+        },
+      };
     }
 
     case "get_pending_requests": {
@@ -415,7 +691,7 @@ async function executeToolCall(
           .eq("to_user_id", userId)
           .eq("status", "pending"),
       ]);
-      
+
       return {
         result: {
           friend_requests: friendReqs.data || [],
@@ -458,17 +734,23 @@ serve(async (req) => {
       });
     }
 
-    const { message, conversationHistory, pendingConfirmation, confirmedAction } = await req.json();
+    const {
+      message,
+      conversationHistory,
+      pendingConfirmation,
+      confirmedAction,
+      currentHackathonId,
+    } = await req.json();
 
     // Check guardrails
     const guardrailCheck = checkGuardrails(message);
     if (guardrailCheck.blocked) {
-      return new Response(JSON.stringify({ 
-        response: guardrailCheck.reason,
-        blocked: true 
-      }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+      return new Response(
+        JSON.stringify({ response: guardrailCheck.reason, blocked: true }),
+        {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     // Get user profile for context
@@ -479,37 +761,29 @@ serve(async (req) => {
       .single();
 
     // Build system prompt
-    const systemPrompt = `You are HackerBuddy, a helpful AI assistant for a hackathon community platform. 
-Your role is to help users:
-- Find and learn about hackathons
-- Create and manage teams
-- Connect with other hackers
-- Submit new hackathons for approval
+    const systemPrompt = `You are HackerBuddy, a helpful AI assistant for a hackathon community platform.
 
 Current user: ${profile?.username || "User"} (@${profile?.userid || "unknown"})
 
 IMPORTANT RULES:
-1. Only perform actions for the current user. Never access or modify other users' private data.
-2. For actions that modify data (create team, send friend request, etc.), always ask for confirmation first.
-3. If you cannot find information or perform an action, clearly say so. Never make up data.
-4. Be friendly, concise, and helpful.
-5. When searching for hackathons or information, use the available tools.
-6. For web searches, focus on hackathon-related information.
+1. Use the database as the source of truth for hackathons, teams, friends, and participations.
+2. If a tool returns {needs_selection: true}, show the options and ask the user to choose ONE (usually by slug or userid).
+3. For any data-changing action (creating a team, sending a friend request, inviting to a team, submitting a hackathon), always ask for confirmation first.
+4. Never invent links or hackathons. If a hackathon's url is missing, say it's missing.
+5. Be concise and action-oriented.
 
 Available capabilities:
-- Search hackathons in the database
-- Search the web for hackathon information
-- View user's teams and friends
-- Send friend requests (with confirmation)
-- Create teams for hackathons (with confirmation)
-- Invite users to teams (with confirmation)
-- Submit new hackathons (with confirmation)
-- View pending requests`;
+- Search hackathons in the database (partial name supported)
+- Get official hackathon links from the database
+- View current participations
+- Create teams and send requests (with confirmation)
+- Search users by username/userid/UUID (partial supported)
+- Web search (when needed)`;
 
     // Build messages for AI
     const messages = [
       { role: "system", content: systemPrompt },
-      ...(conversationHistory || []).slice(-10),
+      ...(conversationHistory || []).slice(-20),
       { role: "user", content: message },
     ];
 
@@ -525,17 +799,21 @@ Available capabilities:
         confirmedAction.arguments,
         supabase,
         user.id,
-        true
+        true,
+        { currentHackathonId }
       );
-      
-      return new Response(JSON.stringify({
-        response: result.result.success 
-          ? `✅ ${result.result.message}` 
-          : `❌ ${result.result.error || "Action failed"}`,
-        toolResults: [result.result],
-      }), {
-        headers: { ...corsHeaders, "Content-Type": "application/json" },
-      });
+
+      return new Response(
+        JSON.stringify({
+          response: result.result?.success
+            ? `✅ ${result.result.message}`
+            : `❌ ${result.result?.error || "Action failed"}`,
+          toolResults: [result.result],
+        }),
+        {
+          headers: { ...corsHeaders, "Content-Type": "application/json" },
+        }
+      );
     }
 
     // Call AI with tools
@@ -581,25 +859,27 @@ Available capabilities:
       const toolResults = [];
       let pendingConfirmationAction = null;
 
-      for (const toolCall of choice.message.tool_calls) {
-        const toolName = toolCall.function.name;
-        const toolArgs = JSON.parse(toolCall.function.arguments || "{}");
-        
-        console.log(`Executing tool: ${toolName}`, toolArgs);
-        
-        const result = await executeToolCall(toolName, toolArgs, supabase, user.id, false);
-        
-        if (result.needsConfirmation) {
-          pendingConfirmationAction = {
-            name: toolName,
-            arguments: toolArgs,
-            message: result.confirmationMessage,
-          };
-          break;
-        }
-        
-        toolResults.push({ tool: toolName, result: result.result });
-      }
+       for (const toolCall of choice.message.tool_calls) {
+         const toolName = toolCall.function.name;
+         const toolArgs = JSON.parse(toolCall.function.arguments || "{}");
+
+         console.log(`Executing tool: ${toolName}`, toolArgs);
+
+         const result = await executeToolCall(toolName, toolArgs, supabase, user.id, false, {
+           currentHackathonId,
+         });
+
+         if (result.needsConfirmation) {
+           pendingConfirmationAction = {
+             name: toolName,
+             arguments: toolArgs,
+             message: result.confirmationMessage,
+           };
+           break;
+         }
+
+         toolResults.push({ tool: toolName, result: result.result });
+       }
 
       // If there's a pending confirmation, return it
       if (pendingConfirmationAction) {
