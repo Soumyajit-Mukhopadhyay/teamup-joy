@@ -256,6 +256,37 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "request_to_join_team",
+      description:
+        "Send a request to join a team that is looking for teammates. REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          team_query: { type: "string", description: "Team name or team ID (partial ok)" },
+          hackathon_query: { type: "string", description: "Hackathon name/slug (partial ok) to narrow down team search" },
+        },
+        required: ["team_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_teams_looking_for_teammates",
+      description:
+        "Get all teams that are looking for teammates for a specific hackathon. Shows teams with 'anyone' visibility and teams with 'friends_only' visibility if the user is friends with the leader.",
+      parameters: {
+        type: "object",
+        properties: {
+          hackathon_query: { type: "string", description: "Hackathon name/slug/id (partial ok)" },
+        },
+        required: ["hackathon_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "web_search",
       description:
         "Search the web for information about hackathons, technologies, or any topic the user asks about",
@@ -499,6 +530,7 @@ const CONFIRMATION_REQUIRED_ACTIONS = [
   "remove_friend",
   "set_looking_for_teammates",
   "remove_team_member",
+  "request_to_join_team",
 ];
 
 // Blocked/dangerous actions
@@ -2302,6 +2334,213 @@ async function executeToolCall(
           success: true,
           message: `${target.username} (@${target.userid}) has been removed from team "${team.name}"`,
           action_type: "remove_team_member",
+        },
+      };
+    }
+
+    case "get_teams_looking_for_teammates": {
+      const resolved = await resolveHackathon(args.hackathon_query);
+      if (resolved.type === "error") return { result: { error: resolved.error } };
+      if (resolved.type === "none") return { result: { error: "Hackathon not found" } };
+      if (resolved.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple hackathons. Which one?",
+            matches: resolved.matches.map((h: any) => ({ name: h.name, slug: h.slug })),
+          },
+        };
+      }
+
+      const hackathon = resolved.match;
+
+      // Get teams looking for teammates
+      const { data: teams, error: teamsErr } = await supabase
+        .from("teams")
+        .select("id, name, looking_visibility, created_by")
+        .eq("hackathon_id", hackathon.slug)
+        .eq("looking_for_teammates", true);
+
+      if (teamsErr) return { result: { error: teamsErr.message } };
+      if (!teams?.length) {
+        return { result: { message: `No teams are currently looking for teammates in "${hackathon.name}"` } };
+      }
+
+      // Get user's friends
+      const { data: friends } = await supabase
+        .from("friends")
+        .select("friend_id, user_id")
+        .or(`user_id.eq.${userId},friend_id.eq.${userId}`);
+
+      const friendIds = new Set((friends || []).map((f: any) => f.user_id === userId ? f.friend_id : f.user_id));
+
+      // Filter teams based on visibility
+      const visibleTeams = teams.filter((t: any) => {
+        if (t.created_by === userId) return false;
+        if (t.looking_visibility === "anyone") return true;
+        if (t.looking_visibility === "friends_only") return friendIds.has(t.created_by);
+        return false;
+      });
+
+      if (!visibleTeams.length) {
+        return { result: { message: `No teams are looking for you in "${hackathon.name}"` } };
+      }
+
+      // Get leader profiles
+      const leaderIds = visibleTeams.map((t: any) => t.created_by);
+      const { data: profiles } = await supabase
+        .from("profiles")
+        .select("user_id, username, userid")
+        .in("user_id", leaderIds);
+
+      const profileMap = new Map((profiles || []).map((p: any) => [p.user_id, p]));
+
+      const result = visibleTeams.map((t: any) => {
+        const leader = profileMap.get(t.created_by) as { username?: string; userid?: string } | undefined;
+        return {
+          name: t.name,
+          id: t.id,
+          leader: leader ? `${leader.username} (@${leader.userid})` : "Unknown",
+          visibility: t.looking_visibility,
+        };
+      });
+
+      return {
+        result: {
+          hackathon: hackathon.name,
+          teams: result,
+          message: `Found ${result.length} team(s) looking for teammates in "${hackathon.name}"`,
+        },
+      };
+    }
+
+    case "request_to_join_team": {
+      // Try to find the team
+      let teamQuery = supabase
+        .from("teams")
+        .select("id, name, hackathon_id, created_by, looking_for_teammates, looking_visibility")
+        .eq("looking_for_teammates", true)
+        .ilike("name", `%${cleanQuery(args.team_query)}%`);
+
+      // Optionally filter by hackathon
+      if (args.hackathon_query) {
+        const hackRes = await resolveHackathon(args.hackathon_query);
+        if (hackRes.type === "single") {
+          teamQuery = teamQuery.eq("hackathon_id", hackRes.match.slug);
+        }
+      }
+
+      const { data: teams, error: teamErr } = await teamQuery.limit(10);
+
+      if (teamErr) return { result: { error: teamErr.message } };
+      if (!teams?.length) {
+        return { result: { error: "No teams found matching that name that are looking for teammates" } };
+      }
+
+      // Filter based on visibility
+      const { data: friends } = await supabase
+        .from("friends")
+        .select("friend_id, user_id")
+        .or(`user_id.eq.${userId},friend_id.eq.${userId}`);
+
+      const friendIds = new Set((friends || []).map((f: any) => f.user_id === userId ? f.friend_id : f.user_id));
+
+      const visibleTeams = teams.filter((t: any) => {
+        if (t.created_by === userId) return false;
+        if (t.looking_visibility === "anyone") return true;
+        if (t.looking_visibility === "friends_only") return friendIds.has(t.created_by);
+        return false;
+      });
+
+      if (!visibleTeams.length) {
+        return { result: { error: "No visible teams found. The team may be 'friends only' and you're not friends with the leader." } };
+      }
+
+      if (visibleTeams.length > 1) {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple teams. Which one do you want to join?",
+            matches: visibleTeams.map((t: any) => ({ name: t.name, hackathon_id: t.hackathon_id })),
+          },
+        };
+      }
+
+      const team = visibleTeams[0];
+
+      // Check if already a member
+      const { data: existingMember } = await supabase
+        .from("team_members")
+        .select("id")
+        .eq("team_id", team.id)
+        .eq("user_id", userId)
+        .maybeSingle();
+
+      if (existingMember) {
+        return { result: { error: `You are already a member of "${team.name}"` } };
+      }
+
+      // Check if already requested
+      const { data: existingRequest } = await supabase
+        .from("team_requests")
+        .select("id, status")
+        .eq("team_id", team.id)
+        .eq("from_user_id", userId)
+        .maybeSingle();
+
+      if (existingRequest?.status === "pending") {
+        return { result: { error: `You already have a pending request to join "${team.name}"` } };
+      }
+
+      // Get hackathon name
+      const { data: hackathon } = await supabase
+        .from("hackathons")
+        .select("name")
+        .eq("slug", team.hackathon_id)
+        .maybeSingle();
+
+      const hackathonName = hackathon?.name || team.hackathon_id;
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll send a request to join team "${team.name}" in "${hackathonName}". Should I proceed?`,
+        };
+      }
+
+      // Send the request
+      if (existingRequest) {
+        await supabase
+          .from("team_requests")
+          .update({ status: "pending", updated_at: new Date().toISOString() })
+          .eq("id", existingRequest.id);
+      } else {
+        const { error: insertErr } = await supabase.from("team_requests").insert({
+          team_id: team.id,
+          from_user_id: userId,
+          to_user_id: team.created_by,
+          status: "pending",
+        });
+
+        if (insertErr) return { result: { error: insertErr.message } };
+      }
+
+      // Notify the team leader
+      await supabase.from("notifications").insert({
+        user_id: team.created_by,
+        type: "team_join_request",
+        title: "Team Join Request",
+        message: `${userProfile?.username || "Someone"} wants to join your team "${team.name}"`,
+        reference_id: team.id,
+        reference_type: "team",
+      });
+
+      return {
+        result: {
+          success: true,
+          action_type: "request_to_join_team",
+          message: `Request sent to join team "${team.name}" in "${hackathonName}"`,
         },
       };
     }
