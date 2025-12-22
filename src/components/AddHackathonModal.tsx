@@ -62,7 +62,7 @@ const AddHackathonModal = ({ onAdd }: AddHackathonModalProps) => {
     setSubmitting(true);
 
     try {
-      const { error } = await supabase.from('hackathons').insert({
+      const { data, error } = await supabase.from('hackathons').insert({
         name: formData.name,
         description: formData.description || null,
         start_date: new Date(formData.startDate).toISOString(),
@@ -75,9 +75,29 @@ const AddHackathonModal = ({ onAdd }: AddHackathonModalProps) => {
         is_global: formData.region === 'Global',
         status: 'pending',
         submitted_by: user.id,
-      });
+      }).select().single();
 
       if (error) throw error;
+
+      // Send email notification to admins
+      try {
+        const { data: profile } = await supabase
+          .from('profiles')
+          .select('userid')
+          .eq('user_id', user.id)
+          .maybeSingle();
+
+        await supabase.functions.invoke('notify-hackathon-submission', {
+          body: {
+            hackathon_id: data.id,
+            hackathon_name: formData.name,
+            submitter_username: profile?.userid || 'unknown',
+          },
+        });
+      } catch (emailError) {
+        console.error('Failed to send admin notification:', emailError);
+        // Don't fail the submission if email fails
+      }
 
       toast.success('Hackathon submitted for admin approval!');
       setOpen(false);

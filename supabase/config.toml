@@ -1,1 +1,4 @@
 project_id = "efzooflemtdqzgzoyayd"
+
+[functions.notify-hackathon-submission]
+verify_jwt = false
