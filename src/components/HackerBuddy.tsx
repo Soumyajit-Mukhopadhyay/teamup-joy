@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   AlertDialog,
@@ -57,7 +57,7 @@ const HackerBuddy = () => {
   const [taskQueue, setTaskQueue] = useState<PendingAction[]>([]);
   const [isExecutingQueue, setIsExecutingQueue] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
-  const inputRef = useRef<HTMLInputElement>(null);
+  const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // Auto-scroll to bottom
   const scrollToBottom = useCallback(() => {
@@ -70,25 +70,39 @@ const HackerBuddy = () => {
   }, []);
 
   // Execute browser actions (open links, copy to clipboard, etc.)
-  const executeAction = useCallback((action: { type: string; url?: string; text?: string }) => {
-    switch (action.type) {
-      case 'open_link':
-        if (action.url) {
-          window.open(action.url, '_blank', 'noopener,noreferrer');
-        }
-        break;
-      case 'copy_to_clipboard':
-        if (action.text) {
-          navigator.clipboard.writeText(action.text).then(() => {
-            toast.success('Link copied to clipboard!');
-          }).catch((err) => {
-            console.error('Failed to copy:', err);
-            toast.error('Failed to copy link');
-          });
-        }
-        break;
-    }
-  }, []);
+  const executeAction = useCallback(
+    (action: { type: string; url?: string; text?: string }) => {
+      switch (action.type) {
+        case 'open_link':
+          if (action.url) {
+            const opened = window.open(action.url, '_blank', 'noopener,noreferrer');
+            // Some browsers block window.open when it happens after async work.
+            // If blocked, copy the link so the user can still open it.
+            if (!opened) {
+              navigator.clipboard
+                .writeText(action.url)
+                .then(() => toast.info('Popup blocked — link copied to clipboard'))
+                .catch(() => toast.info('Popup blocked — long-press to copy the link from chat'));
+            }
+          }
+          break;
+        case 'copy_to_clipboard':
+          if (action.text) {
+            navigator.clipboard
+              .writeText(action.text)
+              .then(() => {
+                toast.success('Link copied to clipboard!');
+              })
+              .catch((err) => {
+                console.error('Failed to copy:', err);
+                toast.error('Failed to copy link');
+              });
+          }
+          break;
+      }
+    },
+    []
+  );
 
   // Load messages from database on mount
   useEffect(() => {
@@ -187,9 +201,13 @@ const HackerBuddy = () => {
   };
 
   // Execute a single task and return the result
-  const executeTask = async (action: PendingAction, remainingTasks: PendingAction[] = []): Promise<{
+  const executeTask = async (
+    action: PendingAction,
+    remainingTasks: PendingAction[] = []
+  ): Promise<{
     success: boolean;
     response: string;
+    toolResults?: any[];
     nextPendingAction?: PendingAction;
     nextRemainingTasks?: PendingAction[];
     actionCompleted?: string;
@@ -231,6 +249,7 @@ const HackerBuddy = () => {
     return {
       success: true,
       response: data.response,
+      toolResults: data.toolResults,
       nextPendingAction: data.pendingConfirmation,
       nextRemainingTasks: data.remainingTasks,
       actionCompleted: data.actionCompleted,
@@ -269,6 +288,14 @@ const HackerBuddy = () => {
         // Emit event for UI refresh
         if (result.actionCompleted) {
           emitAIActionEvent(result.actionCompleted);
+        }
+
+        // Execute any browser actions for this task
+        if (result.toolResults) {
+          for (const tr of result.toolResults) {
+            const action = tr?.action ?? tr?.result?.action;
+            if (action) executeAction(action);
+          }
         }
 
         // Check if next action needs confirmation (shouldn't happen in auto-queue mode)
@@ -479,9 +506,8 @@ const HackerBuddy = () => {
         // Execute any browser actions from tool results
         if (data.toolResults) {
           for (const tr of data.toolResults) {
-            if (tr?.action) {
-              executeAction(tr.action);
-            }
+            const action = tr?.action ?? tr?.result?.action;
+            if (action) executeAction(action);
           }
         }
 
@@ -642,16 +668,26 @@ const HackerBuddy = () => {
 
           {/* Input */}
           <form onSubmit={sendMessage} className="p-4 border-t border-border">
-            <div className="flex gap-2">
-              <Input
+            <div className="flex gap-2 items-end">
+              <Textarea
                 ref={inputRef}
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    void sendMessage();
+                  }
+                }}
                 placeholder="Ask me anything..."
                 disabled={isLoading || !!pendingAction || isExecutingQueue}
-                className="flex-1"
+                className="flex-1 min-h-[44px] max-h-32 resize-none"
               />
-              <Button type="submit" size="icon" disabled={isLoading || !input.trim() || !!pendingAction || isExecutingQueue}>
+              <Button
+                type="submit"
+                size="icon"
+                disabled={isLoading || !input.trim() || !!pendingAction || isExecutingQueue}
+              >
                 <Send className="h-4 w-4" />
               </Button>
             </div>
