@@ -62,8 +62,15 @@ const AddHackathonModal = ({ onAdd }: AddHackathonModalProps) => {
     setSubmitting(true);
 
     try {
-      const { data, error } = await supabase.from('hackathons').insert({
+      // Generate a slug from the name
+      const slug = formData.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, '-')
+        .replace(/(^-|-$)/g, '') + '-' + Date.now();
+
+      const { data, error } = await supabase.from('hackathons').insert([{
         name: formData.name,
+        slug: slug,
         description: formData.description || null,
         start_date: new Date(formData.startDate).toISOString(),
         end_date: new Date(formData.endDate).toISOString(),
@@ -75,7 +82,7 @@ const AddHackathonModal = ({ onAdd }: AddHackathonModalProps) => {
         is_global: formData.region === 'Global',
         status: 'pending',
         submitted_by: user.id,
-      }).select().single();
+      }]).select().single();
 
       if (error) throw error;
 
