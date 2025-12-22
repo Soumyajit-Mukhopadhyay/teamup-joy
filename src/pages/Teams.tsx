@@ -97,7 +97,7 @@ const Teams = () => {
 
   // Listen for AI actions that affect teams
   useAIActionRefresh({
-    actions: ['leave_team', 'delete_team', 'create_team', 'accept_team_request', 'set_looking_for_teammates'],
+    actions: ['leave_team', 'delete_team', 'create_team', 'accept_team_request', 'set_looking_for_teammates', 'remove_team_member'],
     onAction: () => {
       fetchTeams();
     },

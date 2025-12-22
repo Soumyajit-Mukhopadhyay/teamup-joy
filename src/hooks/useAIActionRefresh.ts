@@ -11,6 +11,8 @@ type ActionType =
   | 'accept_team_request'
   | 'invite_to_team'
   | 'set_looking_for_teammates'
+  | 'remove_team_member'
+  | 'submit_hackathon'
   | string;
 
 interface UseAIActionRefreshOptions {
