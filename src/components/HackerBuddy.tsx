@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -45,8 +45,18 @@ const HackerBuddy = () => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState<Message['pendingConfirmation'] | null>(null);
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollAreaRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  // Auto-scroll to bottom
+  const scrollToBottom = useCallback(() => {
+    if (scrollAreaRef.current) {
+      const scrollContainer = scrollAreaRef.current.querySelector('[data-radix-scroll-area-viewport]');
+      if (scrollContainer) {
+        scrollContainer.scrollTop = scrollContainer.scrollHeight;
+      }
+    }
+  }, []);
 
   // Load messages from database on mount
   useEffect(() => {
@@ -55,12 +65,20 @@ const HackerBuddy = () => {
     }
   }, [user, isOpen]);
 
-  // Scroll to bottom on new messages
+  // Scroll to bottom on new messages or when chat opens
   useEffect(() => {
-    if (scrollRef.current) {
-      scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+    if (isOpen) {
+      // Small delay to ensure DOM is updated
+      setTimeout(scrollToBottom, 100);
     }
-  }, [messages]);
+  }, [messages, isOpen, scrollToBottom]);
+
+  // Also scroll when loading finishes
+  useEffect(() => {
+    if (!isLoading && isOpen) {
+      setTimeout(scrollToBottom, 50);
+    }
+  }, [isLoading, isOpen, scrollToBottom]);
 
   const loadMessages = async () => {
     if (!user) return;
@@ -159,6 +177,9 @@ const HackerBuddy = () => {
     }
 
     setIsLoading(true);
+    
+    // Scroll to show the user message and loading indicator
+    setTimeout(scrollToBottom, 50);
 
     const pathname = window.location.pathname || '';
     const hackathonMatch = pathname.match(/^\/hackathon\/([^/]+)$/);
@@ -236,6 +257,8 @@ const HackerBuddy = () => {
                     m.id === assistantId ? { ...m, content: fullContent } : m
                   )
                 );
+                // Scroll as content streams in
+                scrollToBottom();
               }
             } catch {
               // Incomplete JSON, put it back
@@ -312,6 +335,8 @@ const HackerBuddy = () => {
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
+      // Final scroll after everything is done
+      setTimeout(scrollToBottom, 100);
     }
   };
 
@@ -382,7 +407,7 @@ const HackerBuddy = () => {
           </div>
 
           {/* Messages */}
-          <ScrollArea className="flex-1 p-4" ref={scrollRef}>
+          <ScrollArea className="flex-1 p-4" ref={scrollAreaRef}>
             {messages.length === 0 ? (
               <div className="text-center text-muted-foreground py-8">
                 <Bot className="h-12 w-12 mx-auto mb-4 opacity-50" />

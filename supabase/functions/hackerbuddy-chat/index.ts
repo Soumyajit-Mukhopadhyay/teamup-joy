@@ -13,13 +13,13 @@ const tools = [
     function: {
       name: "search_hackathons",
       description:
-        "Search approved hackathons in the database by partial name/description, region, or tags.",
+        "Search approved hackathons in the database by partial name/description, region, or tags. Use this when user mentions any hackathon name even partially.",
       parameters: {
         type: "object",
         properties: {
           query: {
             type: "string",
-            description: "Partial name/description/tag query (case-insensitive)",
+            description: "Partial name/description/tag query (case-insensitive). Can be just a part of the name like 'nation' for 'NationBuilding'",
           },
           region: { type: "string", description: "Filter by region" },
           limit: { type: "number", description: "Max results (default 10)" },
@@ -72,7 +72,7 @@ const tools = [
     type: "function",
     function: {
       name: "get_user_teams",
-      description: "Get all teams the current user is a member of",
+      description: "Get all teams the current user is a member of, including their role and hackathon info",
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
@@ -105,6 +105,42 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "accept_friend_request",
+      description:
+        "Accept a pending friend request from another user. REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          user_query: {
+            type: "string",
+            description: "username, userid, or UUID of the person who sent the request (partial ok)",
+          },
+        },
+        required: ["user_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "accept_team_request",
+      description:
+        "Accept a pending team invitation. REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          team_query: {
+            type: "string",
+            description: "Team name or team ID (partial ok)",
+          },
+        },
+        required: ["team_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "create_team",
       description:
         "Create a new team for a hackathon. Hackathon can be provided as slug/id/name (partial ok). REQUIRES USER CONFIRMATION.",
@@ -125,19 +161,55 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "leave_team",
+      description:
+        "Leave a team. The current user will be removed from the team. If user is the only member or leader, the team may need to be deleted instead. REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          team_query: {
+            type: "string",
+            description: "Team name or team ID (partial ok)",
+          },
+        },
+        required: ["team_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "delete_team",
+      description:
+        "Delete a team. Only the team creator/leader can delete a team. REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          team_query: {
+            type: "string",
+            description: "Team name or team ID (partial ok)",
+          },
+        },
+        required: ["team_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "invite_to_team",
       description:
         "Invite a user to join a team by username/userid/UUID. REQUIRES USER CONFIRMATION.",
       parameters: {
         type: "object",
         properties: {
-          team_id: { type: "string", description: "UUID of the team" },
+          team_query: { type: "string", description: "Team name or team ID (partial ok)" },
           user_query: {
             type: "string",
             description: "username, userid, or UUID (partial ok)",
           },
         },
-        required: ["team_id", "user_query"],
+        required: ["team_query", "user_query"],
       },
     },
   },
@@ -194,7 +266,11 @@ const tools = [
 // Guardrails - actions that require confirmation
 const CONFIRMATION_REQUIRED_ACTIONS = [
   "send_friend_request",
+  "accept_friend_request",
+  "accept_team_request",
   "create_team",
+  "leave_team",
+  "delete_team",
   "invite_to_team",
   "submit_hackathon",
 ];
@@ -230,6 +306,7 @@ async function executeToolCall(
   args: Record<string, any>,
   supabase: any,
   userId: string,
+  userProfile: { username: string; userid: string } | null,
   pendingConfirmation: boolean,
   context: { currentHackathonId?: string } = {}
 ): Promise<{ result: any; needsConfirmation?: boolean; confirmationMessage?: string }> {
@@ -245,6 +322,9 @@ async function executeToolCall(
     const query = cleanQuery(queryRaw);
     if (!query) return { type: "none" as const, matches: [] as any[] };
 
+    // Normalize query - remove common words, make lowercase
+    const normalizedQuery = query.toLowerCase().replace(/\s+/g, ' ').trim();
+    
     // 1) Exact by slug or id
     const exact = await supabase
       .from("hackathons")
@@ -255,12 +335,23 @@ async function executeToolCall(
 
     if (exact.data) return { type: "single" as const, match: exact.data };
 
-    // 2) Partial name match
-    const { data: partial, error } = await supabase
+    // 2) Partial name match - try multiple variations
+    const searchTerms = normalizedQuery.split(' ').filter(t => t.length >= 3);
+    
+    let partialQuery = supabase
       .from("hackathons")
       .select("id, slug, name, region, start_date, end_date, url")
-      .eq("status", "approved")
-      .ilike("name", `%${query}%`)
+      .eq("status", "approved");
+    
+    // Search for any of the terms in the name
+    if (searchTerms.length > 0) {
+      const orConditions = searchTerms.map(term => `name.ilike.%${term}%`).join(',');
+      partialQuery = partialQuery.or(orConditions);
+    } else {
+      partialQuery = partialQuery.ilike("name", `%${normalizedQuery}%`);
+    }
+    
+    const { data: partial, error } = await partialQuery
       .order("start_date", { ascending: true })
       .limit(5);
 
@@ -296,18 +387,68 @@ async function executeToolCall(
     return { type: "many" as const, matches: data };
   };
 
+  const resolveTeam = async (queryRaw: string, mustBeMember = false, mustBeLeader = false) => {
+    const query = cleanQuery(queryRaw);
+    if (!query) return { type: "none" as const, matches: [] as any[] };
+
+    let teamsQuery = supabase
+      .from("teams")
+      .select("id, name, hackathon_id, created_by");
+
+    if (isUuid(query)) {
+      teamsQuery = teamsQuery.eq("id", query);
+    } else {
+      teamsQuery = teamsQuery.ilike("name", `%${query}%`);
+    }
+
+    const { data: teams, error } = await teamsQuery.limit(10);
+    if (error) return { type: "error" as const, error: error.message };
+    if (!teams?.length) return { type: "none" as const, matches: [] as any[] };
+
+    // If we need to filter by membership
+    let filteredTeams = teams;
+    if (mustBeMember || mustBeLeader) {
+      const teamIds = teams.map((t: any) => t.id);
+      const { data: memberships } = await supabase
+        .from("team_members")
+        .select("team_id, is_leader, role")
+        .eq("user_id", userId)
+        .in("team_id", teamIds);
+
+      const membershipMap = new Map((memberships || []).map((m: any) => [m.team_id, m]));
+      
+      filteredTeams = teams.filter((t: any) => {
+        const membership = membershipMap.get(t.id) as { is_leader?: boolean; role?: string } | undefined;
+        if (!membership) return false;
+        if (mustBeLeader) return membership.is_leader || membership.role === 'leader' || t.created_by === userId;
+        return true;
+      });
+    }
+
+    if (!filteredTeams.length) return { type: "none" as const, matches: [] as any[] };
+    if (filteredTeams.length === 1) return { type: "single" as const, match: filteredTeams[0] };
+
+    return { type: "many" as const, matches: filteredTeams };
+  };
+
   switch (toolName) {
     case "search_hackathons": {
       let query = supabase.from("hackathons").select("*").eq("status", "approved");
       if (args.query) {
-        const q = cleanQuery(args.query);
-        query = query.or(`name.ilike.%${q}%,description.ilike.%${q}%`);
+        const q = cleanQuery(args.query).toLowerCase();
+        const searchTerms = q.split(' ').filter((t: string) => t.length >= 2);
+        if (searchTerms.length > 0) {
+          const orConditions = searchTerms.map((term: string) => `name.ilike.%${term}%`).join(',');
+          query = query.or(`${orConditions},description.ilike.%${q}%`);
+        } else {
+          query = query.or(`name.ilike.%${q}%,description.ilike.%${q}%`);
+        }
       }
       if (args.region) {
         query = query.ilike("region", `%${cleanQuery(args.region)}%`);
       }
       const limit = Math.min(Math.max(Number(args.limit ?? 10) || 10, 1), 25);
-      const { data, error } = await query.limit(limit);
+      const { data, error } = await query.order("start_date", { ascending: true }).limit(limit);
       if (error) return { result: { error: error.message } };
       return { result: data || [] };
     }
@@ -339,7 +480,7 @@ async function executeToolCall(
           slug: res.match.slug,
           url: res.match.url || null,
           message: res.match.url
-            ? `Official link for ${res.match.name}`
+            ? `Official link for ${res.match.name}: ${res.match.url}`
             : `I don't have an official link saved for ${res.match.name}.`,
         },
       };
@@ -407,10 +548,38 @@ async function executeToolCall(
       const teamIds = teamMembers.map((tm: any) => tm.team_id);
       const { data: teams } = await supabase
         .from("teams")
-        .select("id, name, hackathon_id")
+        .select("id, name, hackathon_id, created_by")
         .in("id", teamIds);
 
-      return { result: teams || [] };
+      // Get hackathon info
+      const hackathonIds = [...new Set((teams || []).map((t: any) => t.hackathon_id))] as string[];
+      const uuidHackathonIds = hackathonIds.filter((v: string) => isUuid(v));
+      const { data: hackathons } = hackathonIds.length
+        ? await supabase
+            .from("hackathons")
+            .select("id, slug, name")
+            .or(`slug.in.(${hackathonIds.join(',')}),id.in.(${uuidHackathonIds.join(',') || 'null'})`)
+        : { data: [] };
+
+      const hackathonMap = new Map();
+      (hackathons || []).forEach((h: any) => {
+        hackathonMap.set(h.slug, h);
+        hackathonMap.set(h.id, h);
+      });
+
+      const membershipMap = new Map(teamMembers.map((tm: any) => [tm.team_id, tm]));
+
+      return {
+        result: (teams || []).map((t: any) => {
+          const mem = membershipMap.get(t.id) as { is_leader?: boolean } | undefined;
+          return {
+            ...t,
+            hackathon: hackathonMap.get(t.hackathon_id) || null,
+            membership: mem,
+            is_leader: mem?.is_leader || t.created_by === userId,
+          };
+        }),
+      };
     }
 
     case "get_user_friends": {
@@ -492,18 +661,140 @@ async function executeToolCall(
       };
     }
 
+    case "accept_friend_request": {
+      const who = await resolveUser(args.user_query);
+      if (who.type === "error") return { result: { error: who.error } };
+      if (who.type === "none") return { result: { error: "User not found" } };
+      if (who.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple users. Which one's friend request should I accept?",
+            matches: who.matches,
+          },
+        };
+      }
+
+      const sender = who.match;
+
+      // Find pending request from this user
+      const { data: request } = await supabase
+        .from("friend_requests")
+        .select("id")
+        .eq("from_user_id", sender.user_id)
+        .eq("to_user_id", userId)
+        .eq("status", "pending")
+        .maybeSingle();
+
+      if (!request) {
+        return { result: { error: `No pending friend request from ${sender.username}` } };
+      }
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll accept the friend request from ${sender.username} (@${sender.userid}). Should I proceed?`,
+        };
+      }
+
+      // Accept the request
+      await supabase
+        .from("friend_requests")
+        .update({ status: "accepted", updated_at: new Date().toISOString() })
+        .eq("id", request.id);
+
+      // Create mutual friendship
+      await supabase.from("friends").insert([
+        { user_id: userId, friend_id: sender.user_id },
+        { user_id: sender.user_id, friend_id: userId },
+      ]);
+
+      return {
+        result: {
+          success: true,
+          message: `You are now friends with ${sender.username} (@${sender.userid})!`,
+        },
+      };
+    }
+
+    case "accept_team_request": {
+      const teamRes = await resolveTeam(args.team_query);
+      if (teamRes.type === "error") return { result: { error: teamRes.error } };
+      if (teamRes.type === "none") return { result: { error: "Team not found" } };
+      if (teamRes.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple teams. Which one's invitation should I accept?",
+            matches: teamRes.matches,
+          },
+        };
+      }
+
+      const team = teamRes.match;
+
+      // Find pending invitation
+      const { data: request } = await supabase
+        .from("team_requests")
+        .select("id, from_user_id")
+        .eq("team_id", team.id)
+        .eq("to_user_id", userId)
+        .eq("status", "pending")
+        .maybeSingle();
+
+      if (!request) {
+        return { result: { error: `No pending invitation for team "${team.name}"` } };
+      }
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll accept the invitation to join team "${team.name}". Should I proceed?`,
+        };
+      }
+
+      // Accept the request
+      await supabase
+        .from("team_requests")
+        .update({ status: "accepted", updated_at: new Date().toISOString() })
+        .eq("id", request.id);
+
+      // Add to team
+      await supabase.from("team_members").insert({
+        team_id: team.id,
+        user_id: userId,
+        role: "member",
+        is_leader: false,
+      });
+
+      // Add hackathon participation
+      await supabase.from("hackathon_participations").upsert(
+        { user_id: userId, hackathon_id: team.hackathon_id, status: "current" },
+        { onConflict: "user_id,hackathon_id" }
+      );
+
+      return {
+        result: {
+          success: true,
+          message: `You have joined team "${team.name}"!`,
+        },
+      };
+    }
+
     case "create_team": {
       const hackathonQuery = cleanQuery(args.hackathon_query || "") ||
         cleanQuery(context.currentHackathonId || "");
 
       const resolved = await resolveHackathon(hackathonQuery);
       if (resolved.type === "error") return { result: { error: resolved.error } };
-      if (resolved.type === "none") return { result: { error: "Hackathon not found" } };
+      if (resolved.type === "none") return { result: { error: "Hackathon not found. Please specify which hackathon you want to create a team for." } };
       if (resolved.type === "many") {
         return {
           result: {
             needs_selection: true,
-            message: "I found multiple hackathons. Which one should I use?",
+            message: "I found multiple hackathons. Which one should I create the team for?",
             matches: resolved.matches.map((h: any) => ({
               name: h.name,
               slug: h.slug,
@@ -545,28 +836,145 @@ async function executeToolCall(
         is_leader: true,
       });
 
+      // Also add hackathon participation
+      await supabase.from("hackathon_participations").upsert(
+        { user_id: userId, hackathon_id: hackathon.slug, status: "current" },
+        { onConflict: "user_id,hackathon_id" }
+      );
+
       return {
         result: {
           success: true,
-          message: `Team "${args.team_name}" created for ${hackathon.name}`,
+          message: `Team "${args.team_name}" created for ${hackathon.name}. You are now participating in this hackathon!`,
           team_id: team.id,
           hackathon_slug: hackathon.slug,
         },
       };
     }
 
-    case "invite_to_team": {
-      // Verify user is team leader
-      const { data: membership } = await supabase
-        .from("team_members")
-        .select("is_leader, role")
-        .eq("team_id", args.team_id)
-        .eq("user_id", userId)
-        .single();
-
-      if (!membership || (!membership.is_leader && membership.role !== "leader")) {
-        return { result: { error: "You must be a team leader to invite members" } };
+    case "leave_team": {
+      const teamRes = await resolveTeam(args.team_query, true); // must be member
+      if (teamRes.type === "error") return { result: { error: teamRes.error } };
+      if (teamRes.type === "none") return { result: { error: "Team not found or you're not a member" } };
+      if (teamRes.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple teams. Which one do you want to leave?",
+            matches: teamRes.matches,
+          },
+        };
       }
+
+      const team = teamRes.match;
+
+      // Check if user is the only member
+      const { data: members } = await supabase
+        .from("team_members")
+        .select("user_id, is_leader")
+        .eq("team_id", team.id);
+
+      const isOnlyMember = members?.length === 1;
+      const isLeader = members?.some((m: any) => m.user_id === userId && m.is_leader) || team.created_by === userId;
+
+      if (!pendingConfirmation) {
+        let message = `I'll remove you from team "${team.name}".`;
+        if (isOnlyMember) {
+          message = `You are the only member of team "${team.name}". Leaving will effectively abandon the team.`;
+        } else if (isLeader) {
+          message = `You are the leader of team "${team.name}". Leaving will remove you but the team will remain. Consider transferring leadership or deleting the team instead.`;
+        }
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `${message} Should I proceed?`,
+        };
+      }
+
+      // Remove the user from team
+      const { error } = await supabase
+        .from("team_members")
+        .delete()
+        .eq("team_id", team.id)
+        .eq("user_id", userId);
+
+      if (error) return { result: { error: error.message } };
+
+      return {
+        result: {
+          success: true,
+          message: `You have left team "${team.name}"`,
+        },
+      };
+    }
+
+    case "delete_team": {
+      const teamRes = await resolveTeam(args.team_query, false, true); // must be leader/creator
+      if (teamRes.type === "error") return { result: { error: teamRes.error } };
+      if (teamRes.type === "none") return { result: { error: "Team not found or you don't have permission to delete it" } };
+      if (teamRes.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple teams. Which one do you want to delete?",
+            matches: teamRes.matches,
+          },
+        };
+      }
+
+      const team = teamRes.match;
+
+      // Double check ownership
+      if (team.created_by !== userId) {
+        return { result: { error: "Only the team creator can delete the team" } };
+      }
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll permanently delete team "${team.name}" and remove all members. This cannot be undone. Should I proceed?`,
+        };
+      }
+
+      // Delete team members first
+      await supabase.from("team_members").delete().eq("team_id", team.id);
+      
+      // Delete team requests
+      await supabase.from("team_requests").delete().eq("team_id", team.id);
+      
+      // Delete messages
+      await supabase.from("messages").delete().eq("team_id", team.id);
+
+      // Delete the team
+      const { error } = await supabase.from("teams").delete().eq("id", team.id);
+
+      if (error) return { result: { error: error.message } };
+
+      return {
+        result: {
+          success: true,
+          message: `Team "${team.name}" has been deleted`,
+        },
+      };
+    }
+
+    case "invite_to_team": {
+      // First resolve the team
+      const teamRes = await resolveTeam(args.team_query, false, true); // must be leader
+      if (teamRes.type === "error") return { result: { error: teamRes.error } };
+      if (teamRes.type === "none") return { result: { error: "Team not found or you don't have permission to invite" } };
+      if (teamRes.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple teams. Which one do you want to invite to?",
+            matches: teamRes.matches,
+          },
+        };
+      }
+
+      const team = teamRes.match;
 
       const who = await resolveUser(args.user_query);
       if (who.type === "error") return { result: { error: who.error } };
@@ -587,12 +995,12 @@ async function executeToolCall(
         return {
           result: null,
           needsConfirmation: true,
-          confirmationMessage: `I'll send a team invitation to ${target.username} (@${target.userid}). Should I proceed?`,
+          confirmationMessage: `I'll send a team invitation to ${target.username} (@${target.userid}) for team "${team.name}". Should I proceed?`,
         };
       }
 
       const { error } = await supabase.from("team_requests").insert({
-        team_id: args.team_id,
+        team_id: team.id,
         from_user_id: userId,
         to_user_id: target.user_id,
       });
@@ -692,10 +1100,30 @@ async function executeToolCall(
           .eq("status", "pending"),
       ]);
 
+      // Get user info for friend requests
+      const friendUserIds = (friendReqs.data || []).map((r: any) => r.from_user_id);
+      const { data: friendProfiles } = friendUserIds.length
+        ? await supabase.from("profiles").select("user_id, username, userid").in("user_id", friendUserIds)
+        : { data: [] };
+      const friendProfileMap = new Map((friendProfiles || []).map((p: any) => [p.user_id, p]));
+
+      // Get team info for team requests
+      const teamIds = (teamReqs.data || []).map((r: any) => r.team_id);
+      const { data: teams } = teamIds.length
+        ? await supabase.from("teams").select("id, name, hackathon_id").in("id", teamIds)
+        : { data: [] };
+      const teamMap = new Map((teams || []).map((t: any) => [t.id, t]));
+
       return {
         result: {
-          friend_requests: friendReqs.data || [],
-          team_requests: teamReqs.data || [],
+          friend_requests: (friendReqs.data || []).map((r: any) => ({
+            ...r,
+            from_user: friendProfileMap.get(r.from_user_id) || null,
+          })),
+          team_requests: (teamReqs.data || []).map((r: any) => ({
+            ...r,
+            team: teamMap.get(r.team_id) || null,
+          })),
         },
       };
     }
@@ -839,25 +1267,38 @@ serve(async (req) => {
     // Get existing summary for long-term context
     const existingSummary = await getConversationSummary(supabase, user.id);
 
-    // Build system prompt with summary context
+    // Build system prompt with user context - AI already knows who the user is
     let systemPrompt = `You are HackerBuddy, a helpful AI assistant for a hackathon community platform.
 
-Current user: ${profile?.username || "User"} (@${profile?.userid || "unknown"})
+CURRENT USER CONTEXT (you already know this - never ask for it):
+- User ID (UUID): ${user.id}
+- Username: ${profile?.username || "Unknown"}
+- User Handle: @${profile?.userid || "unknown"}
 
-IMPORTANT RULES:
-1. Use the database as the source of truth for hackathons, teams, friends, and participations.
-2. If a tool returns {needs_selection: true}, show the options and ask the user to choose ONE (usually by slug or userid).
-3. For any data-changing action, always ask for confirmation first.
-4. Never invent links or hackathons. If a hackathon's url is missing, say it's missing.
-5. Be concise and action-oriented.
+CRITICAL RULES:
+1. You ALREADY KNOW the current user's identity. NEVER ask "what's your username" or "what's your user ID" - you have this information.
+2. When the user says "I" or "me" or "my", it refers to ${profile?.username || "the current user"} (${user.id}).
+3. Use the database as the source of truth for hackathons, teams, friends, and participations.
+4. When user mentions any hackathon name (even partially like "nation building" or "nationbuilding"), search for it - they likely mean a specific hackathon.
+5. If a tool returns {needs_selection: true}, show the options clearly and ask which one they mean.
+6. For any data-changing action (create, delete, leave, send request), always ask for confirmation first.
+7. When user says "leave" a team, it means the CURRENT USER (${profile?.username}) wants to leave, not remove someone else.
+8. Never invent links or hackathons. If a hackathon's url is missing, say it's missing but provide what info you have.
+9. Be concise and action-oriented.
+
+IMPORTANT CONTEXT AWARENESS:
+- If user asks to "leave" or "delete" a team without specifying which one, first get their teams and ask which one.
+- If user mentions a partial name like "nation building case study", search for it - it likely matches a hackathon.
+- "Leave the team" = current user leaves. "Remove someone" = remove another person (requires leadership).
 
 Available capabilities:
-- Search hackathons in the database (partial name supported)
+- Search hackathons by partial name (case-insensitive, multi-word)
 - Get official hackathon links from the database
-- View current participations
-- Create teams and send requests (with confirmation)
+- View current hackathon participations
+- Create teams, leave teams, delete teams (with confirmation)
+- Accept/send friend requests and team invitations
 - Search users by username/userid/UUID (partial supported)
-- Web search (when needed)`;
+- Web search for external information`;
 
     if (existingSummary?.summary) {
       systemPrompt += `\n\nPrevious conversation summary:\n${existingSummary.summary}`;
@@ -888,6 +1329,7 @@ Available capabilities:
         confirmedAction.arguments,
         supabase,
         user.id,
+        profile,
         true,
         { currentHackathonId }
       );
@@ -958,7 +1400,7 @@ Available capabilities:
 
         console.log(`Executing tool: ${toolName}`, toolArgs);
 
-        const result = await executeToolCall(toolName, toolArgs, supabase, user.id, false, {
+        const result = await executeToolCall(toolName, toolArgs, supabase, user.id, profile, false, {
           currentHackathonId,
         });
 
