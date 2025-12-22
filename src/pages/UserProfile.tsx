@@ -1,13 +1,12 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { User, Calendar, Clock, UserPlus, MessageCircle, Search, Check } from 'lucide-react';
+import { Calendar, Clock, UserPlus, MessageCircle, Search, Check } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { hackathons } from '@/data/hackathons';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { isValidUUID } from '@/lib/validation';
 
@@ -25,16 +24,70 @@ interface Participation {
   created_at: string;
 }
 
+interface HackathonInfo {
+  slug: string;
+  name: string;
+  location: string;
+}
+
 const UserProfile = () => {
   const { userid } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
   const [profile, setProfile] = useState<Profile | null>(null);
   const [participations, setParticipations] = useState<Participation[]>([]);
+  const [hackathonMap, setHackathonMap] = useState<Record<string, HackathonInfo>>({});
   const [loading, setLoading] = useState(true);
   const [isFriend, setIsFriend] = useState(false);
   const [requestSent, setRequestSent] = useState(false);
   const [requestPending, setRequestPending] = useState(false);
+
+  // Fetch hackathon info for a list of hackathon IDs
+  const fetchHackathonInfo = useCallback(async (hackathonIds: string[]) => {
+    if (hackathonIds.length === 0) return {};
+
+    const uniqueIds = [...new Set(hackathonIds)];
+    const infoMap: Record<string, HackathonInfo> = {};
+
+    // Try to fetch by slug first
+    const { data: bySlug } = await supabase
+      .from('hackathons')
+      .select('id, slug, name, location')
+      .in('slug', uniqueIds);
+
+    if (bySlug) {
+      bySlug.forEach(h => {
+        infoMap[h.slug] = {
+          slug: h.slug,
+          name: h.name,
+          location: h.location,
+        };
+      });
+    }
+
+    // For any not found by slug, try by id
+    const foundSlugs = new Set(Object.keys(infoMap));
+    const notFoundIds = uniqueIds.filter(id => !foundSlugs.has(id));
+
+    if (notFoundIds.length > 0) {
+      const { data: byId } = await supabase
+        .from('hackathons')
+        .select('id, slug, name, location')
+        .in('id', notFoundIds);
+
+      if (byId) {
+        byId.forEach(h => {
+          infoMap[h.id] = {
+            slug: h.slug || h.id,
+            name: h.name,
+            location: h.location,
+          };
+        });
+      }
+    }
+
+    return infoMap;
+  }, []);
 
   useEffect(() => {
     fetchProfile();
@@ -65,6 +118,13 @@ const UserProfile = () => {
       .order('created_at', { ascending: false });
 
     setParticipations(participationData || []);
+
+    // Fetch hackathon info
+    if (participationData && participationData.length > 0) {
+      const hackathonIds = participationData.map(p => p.hackathon_id);
+      const infoMap = await fetchHackathonInfo(hackathonIds);
+      setHackathonMap(infoMap);
+    }
 
     // Check friend status
     if (user && user.id !== profileData.user_id) {
@@ -128,8 +188,8 @@ const UserProfile = () => {
     }
   };
 
-  const getHackathon = (hackathonId: string) => {
-    return hackathons.find(h => h.id === hackathonId);
+  const getHackathonInfo = (hackathonId: string) => {
+    return hackathonMap[hackathonId];
   };
 
   const currentParticipations = participations.filter(p => p.status === 'current' || p.status === 'looking_for_team');
@@ -239,11 +299,11 @@ const UserProfile = () => {
             ) : (
               <div className="grid gap-4">
                 {currentParticipations.map((p) => {
-                  const hackathon = getHackathon(p.hackathon_id);
+                  const info = getHackathonInfo(p.hackathon_id);
                   return (
-                    <div key={p.id} className="glass-card p-5 card-hover cursor-pointer" onClick={() => navigate(`/hackathon/${p.hackathon_id}`)}>
-                      <h3 className="font-semibold">{hackathon?.name || p.hackathon_id}</h3>
-                      <p className="text-sm text-muted-foreground">{hackathon?.location}</p>
+                    <div key={p.id} className="glass-card p-5 card-hover cursor-pointer" onClick={() => navigate(`/hackathon/${info?.slug || p.hackathon_id}`)}>
+                      <h3 className="font-semibold">{info?.name || p.hackathon_id}</h3>
+                      <p className="text-sm text-muted-foreground">{info?.location}</p>
                     </div>
                   );
                 })}
@@ -260,11 +320,11 @@ const UserProfile = () => {
             ) : (
               <div className="grid gap-4">
                 {pastParticipations.map((p) => {
-                  const hackathon = getHackathon(p.hackathon_id);
+                  const info = getHackathonInfo(p.hackathon_id);
                   return (
                     <div key={p.id} className="glass-card p-5">
-                      <h3 className="font-semibold">{hackathon?.name || p.hackathon_id}</h3>
-                      <p className="text-sm text-muted-foreground">{hackathon?.location}</p>
+                      <h3 className="font-semibold">{info?.name || p.hackathon_id}</h3>
+                      <p className="text-sm text-muted-foreground">{info?.location}</p>
                     </div>
                   );
                 })}
@@ -281,13 +341,13 @@ const UserProfile = () => {
             ) : (
               <div className="grid gap-4">
                 {lookingForTeam.map((p) => {
-                  const hackathon = getHackathon(p.hackathon_id);
+                  const info = getHackathonInfo(p.hackathon_id);
                   return (
-                    <div key={p.id} className="glass-card p-5 card-hover cursor-pointer" onClick={() => navigate(`/hackathon/${p.hackathon_id}`)}>
+                    <div key={p.id} className="glass-card p-5 card-hover cursor-pointer" onClick={() => navigate(`/hackathon/${info?.slug || p.hackathon_id}`)}>
                       <div className="flex items-center justify-between">
                         <div>
-                          <h3 className="font-semibold">{hackathon?.name || p.hackathon_id}</h3>
-                          <p className="text-sm text-muted-foreground">{hackathon?.location}</p>
+                          <h3 className="font-semibold">{info?.name || p.hackathon_id}</h3>
+                          <p className="text-sm text-muted-foreground">{info?.location}</p>
                         </div>
                         <span className="text-xs bg-primary/20 text-primary px-2 py-1 rounded-full">
                           Looking for team

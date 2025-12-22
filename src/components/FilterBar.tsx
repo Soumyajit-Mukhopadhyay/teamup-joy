@@ -8,8 +8,54 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { regions, topics } from '@/data/hackathons';
 import AddHackathonModal from './AddHackathonModal';
+
+// Static filter options
+const regions = ["All Regions", "India", "Global", "North America", "Europe", "Asia"] as const;
+
+const topics = [
+  "All Topics",
+  "AI",
+  "AI/ML",
+  "Gen AI",
+  "Blockchain",
+  "Web3",
+  "Software",
+  "Hardware",
+  "Cloud",
+  "Cybersecurity",
+  "E-commerce",
+  "Robotics",
+  "Sustainability",
+  "Case Study",
+  "Hiring",
+  "Innovation",
+  "NLP",
+  "DL",
+  "Data Science",
+  "Social Good",
+  "Web Development",
+  "Product Management",
+  "Finance",
+  "DeFi",
+  "Climate",
+  "STEM",
+  "CTF",
+  "Learning",
+  "Community",
+  "Mobile",
+  "Enterprise",
+  "Marketing",
+  "FMCG",
+  "Brand Strategy",
+  "Governance",
+  "Policy",
+  "Healthcare",
+  "Banking",
+  "FinTech",
+  "Leadership",
+  "Strategy",
+] as const;
 
 interface FilterBarProps {
   view: 'grid' | 'calendar';

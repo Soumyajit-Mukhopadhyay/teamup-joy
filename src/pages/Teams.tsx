@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
@@ -6,7 +6,6 @@ import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { Users, MessageCircle, Calendar, Settings, X } from 'lucide-react';
-import { hackathons } from '@/data/hackathons';
 import { format, parseISO, isAfter } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
 import {
@@ -28,16 +27,71 @@ interface Team {
   created_at: string;
   member_count?: number;
   is_leader?: boolean;
+  hackathon_name?: string;
+}
+
+interface HackathonInfo {
+  slug: string;
+  name: string;
+  endDate: string;
 }
 
 const Teams = () => {
   const navigate = useNavigate();
   const { user, loading: authLoading } = useAuth();
   const [teams, setTeams] = useState<Team[]>([]);
+  const [hackathonMap, setHackathonMap] = useState<Record<string, HackathonInfo>>({});
   const [loading, setLoading] = useState(true);
   const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
   const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
   const [leavingTeam, setLeavingTeam] = useState(false);
+
+  // Fetch hackathon info for a list of hackathon IDs
+  const fetchHackathonInfo = useCallback(async (hackathonIds: string[]) => {
+    if (hackathonIds.length === 0) return {};
+
+    const uniqueIds = [...new Set(hackathonIds)];
+    const infoMap: Record<string, HackathonInfo> = {};
+
+    // Try to fetch by slug first
+    const { data: bySlug } = await supabase
+      .from('hackathons')
+      .select('id, slug, name, end_date')
+      .in('slug', uniqueIds);
+
+    if (bySlug) {
+      bySlug.forEach(h => {
+        infoMap[h.slug] = {
+          slug: h.slug,
+          name: h.name,
+          endDate: h.end_date,
+        };
+      });
+    }
+
+    // For any not found by slug, try by id
+    const foundSlugs = new Set(Object.keys(infoMap));
+    const notFoundIds = uniqueIds.filter(id => !foundSlugs.has(id));
+
+    if (notFoundIds.length > 0) {
+      const { data: byId } = await supabase
+        .from('hackathons')
+        .select('id, slug, name, end_date')
+        .in('id', notFoundIds);
+
+      if (byId) {
+        byId.forEach(h => {
+          infoMap[h.id] = {
+            slug: h.slug || h.id,
+            name: h.name,
+            endDate: h.end_date,
+          };
+        });
+      }
+    }
+
+    return infoMap;
+  }, []);
 
   useEffect(() => {
     if (authLoading) return;
@@ -83,6 +137,11 @@ const Teams = () => {
       return;
     }
 
+    // Collect hackathon IDs
+    const hackathonIds = teamsData?.map(t => t.hackathon_id) || [];
+    const infoMap = await fetchHackathonInfo(hackathonIds);
+    setHackathonMap(infoMap);
+
     const teamsWithCounts = await Promise.all(
       (teamsData || []).map(async (team) => {
         const { count } = await supabase
@@ -93,7 +152,12 @@ const Teams = () => {
         const memberInfo = memberData.find(m => m.team_id === team.id);
         const isLeader = memberInfo?.role === 'leader' || memberInfo?.is_leader || team.created_by === user.id;
         
-        return { ...team, member_count: count || 0, is_leader: isLeader };
+        return { 
+          ...team, 
+          member_count: count || 0, 
+          is_leader: isLeader,
+          hackathon_name: infoMap[team.hackathon_id]?.name || team.hackathon_id,
+        };
       })
     );
 
@@ -102,18 +166,13 @@ const Teams = () => {
   };
 
   const getHackathonName = (hackathonId: string) => {
-    const hackathon = hackathons.find(h => h.id === hackathonId);
-    return hackathon?.name || 'Unknown Hackathon';
-  };
-
-  const getHackathon = (hackathonId: string) => {
-    return hackathons.find(h => h.id === hackathonId);
+    return hackathonMap[hackathonId]?.name || hackathonId;
   };
 
   const isHackathonOngoing = (hackathonId: string) => {
-    const hackathon = getHackathon(hackathonId);
-    if (!hackathon) return false;
-    const endDate = parseISO(hackathon.endDate);
+    const info = hackathonMap[hackathonId];
+    if (!info) return false;
+    const endDate = parseISO(info.endDate);
     return isAfter(endDate, new Date());
   };
 
@@ -229,7 +288,7 @@ const Teams = () => {
                         )}
                       </div>
                       <p className="text-sm text-muted-foreground">
-                        {getHackathonName(team.hackathon_id)}
+                        {team.hackathon_name}
                       </p>
                     </div>
                     <span className="flex items-center gap-1 text-sm text-muted-foreground">
