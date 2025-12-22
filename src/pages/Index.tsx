@@ -5,6 +5,7 @@ import HeroSection from '@/components/HeroSection';
 import FilterBar from '@/components/FilterBar';
 import HackathonCard from '@/components/HackathonCard';
 import HackathonCalendar from '@/components/HackathonCalendar';
+import Footer from '@/components/Footer';
 import { useHackathons } from '@/hooks/useHackathons';
 import { useIsAdmin } from '@/hooks/useIsAdmin';
 
@@ -30,11 +31,11 @@ const Index = () => {
   }, [hackathons, search, selectedRegion, selectedTopic]);
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen flex flex-col bg-background">
       <Header />
       <HeroSection />
       
-      <main className="container pb-16">
+      <main className="container pb-16 flex-1">
         <FilterBar
           view={view}
           setView={setView}
@@ -74,6 +75,7 @@ const Index = () => {
           </div>
         )}
       </main>
+      <Footer />
     </div>
   );
 };

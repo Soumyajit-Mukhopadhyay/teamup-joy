@@ -1,6 +1,7 @@
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useHackathon } from '@/hooks/useHackathons';
 import Header from '@/components/Header';
+import Footer from '@/components/Footer';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { format, parseISO } from 'date-fns';
@@ -99,10 +100,10 @@ const HackathonDetail = () => {
   };
 
   return (
-    <div className="min-h-screen bg-background">
+    <div className="min-h-screen flex flex-col bg-background">
       <Header />
       
-      <main className="container py-8">
+      <main className="container py-8 flex-1">
         <Button variant="ghost" className="mb-6 gap-2" onClick={() => navigate('/')}>
           <ArrowLeft className="h-4 w-4" />
           Back to Hackathons
@@ -308,6 +309,7 @@ const HackathonDetail = () => {
           </div>
         </div>
       </main>
+      <Footer />
     </div>
   );
 };

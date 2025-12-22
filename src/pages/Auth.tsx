@@ -8,6 +8,7 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { Eye, EyeOff, Mail, Lock, User, AtSign, CheckCircle2, XCircle, Loader2 } from 'lucide-react';
 import { z } from 'zod';
+import Footer from '@/components/Footer';
 
 const signUpSchema = z.object({
   username: z.string().min(2, 'Username must be at least 2 characters').max(50, 'Username too long'),
@@ -174,16 +175,24 @@ const Auth = () => {
   };
 
   return (
-    <div className="min-h-screen flex items-center justify-center p-4 bg-background">
-      <div className="w-full max-w-md">
-        <div className="text-center mb-8">
-          <h1 className="text-3xl font-bold mb-2">
-            {isForgotPassword ? 'Reset Password' : isSignUp ? 'Create Account' : 'Welcome Back'}
-          </h1>
-          <p className="text-muted-foreground">
-            {isForgotPassword ? 'Enter your email to reset password' : isSignUp ? 'Join the hackathon community' : 'Sign in to continue'}
-          </p>
-        </div>
+    <div className="min-h-screen flex flex-col bg-background">
+      <div className="flex-1 flex items-center justify-center p-4">
+        <div className="w-full max-w-md">
+          {isSignUp && !isForgotPassword && (
+            <div className="mb-6 p-4 rounded-lg bg-primary/10 border border-primary/20 text-center">
+              <p className="text-primary font-medium">
+                👋 Soumyajit welcomes you to this platform!
+              </p>
+            </div>
+          )}
+          <div className="text-center mb-8">
+            <h1 className="text-3xl font-bold mb-2">
+              {isForgotPassword ? 'Reset Password' : isSignUp ? 'Create Account' : 'Welcome Back'}
+            </h1>
+            <p className="text-muted-foreground">
+              {isForgotPassword ? 'Enter your email to reset password' : isSignUp ? 'Join the hackathon community' : 'Sign in to continue'}
+            </p>
+          </div>
 
         <div className="glass-card p-6">
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -359,6 +368,8 @@ const Auth = () => {
           </div>
         </div>
       </div>
+      </div>
+      <Footer />
     </div>
   );
 };
