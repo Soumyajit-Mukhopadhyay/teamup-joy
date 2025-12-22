@@ -321,6 +321,57 @@ const BLOCKED_PATTERNS = [
   /expose.*password/i,
 ];
 
+// Sensitive data patterns to redact from AI responses
+const SENSITIVE_PATTERNS = [
+  { pattern: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, replace: "[user_id]", desc: "UUID" },
+  { pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, replace: "[email]", desc: "email" },
+  { pattern: /password[:\s]*["']?[^"'\s]+["']?/gi, replace: "[redacted]", desc: "password" },
+  { pattern: /secret[:\s]*["']?[^"'\s]+["']?/gi, replace: "[redacted]", desc: "secret" },
+  { pattern: /api[_-]?key[:\s]*["']?[^"'\s]+["']?/gi, replace: "[redacted]", desc: "api_key" },
+];
+
+// Sanitize response to remove sensitive data (but allow specific contexts)
+function sanitizeResponse(text: string, allowedUserIds: string[] = []): string {
+  let sanitized = text;
+  
+  for (const { pattern, replace, desc } of SENSITIVE_PATTERNS) {
+    if (desc === "UUID") {
+      // Allow displaying UUIDs that are in the allowed list (like current user's teams)
+      sanitized = sanitized.replace(pattern, (match) => {
+        if (allowedUserIds.includes(match.toLowerCase())) {
+          return match; // Keep if it's an allowed ID
+        }
+        // Don't expose raw UUIDs to users - they should see usernames instead
+        return "[hidden]";
+      });
+    } else {
+      sanitized = sanitized.replace(pattern, replace);
+    }
+  }
+  
+  return sanitized;
+}
+
+// Record interaction for learning feedback
+async function recordLearningFeedback(
+  supabase: any,
+  userMessage: string,
+  aiResponse: string,
+  toolCalls: any[] | null,
+  wasSuccessful: boolean | null
+): Promise<void> {
+  try {
+    await supabase.from("ai_learning_feedback").insert({
+      user_message: userMessage.slice(0, 2000), // Limit length
+      ai_response: aiResponse.slice(0, 2000),
+      tool_calls: toolCalls,
+      was_successful: wasSuccessful,
+    });
+  } catch (e) {
+    console.error("Failed to record learning feedback:", e);
+  }
+}
+
 function checkGuardrails(userMessage: string): { blocked: boolean; reason?: string } {
   for (const pattern of BLOCKED_PATTERNS) {
     if (pattern.test(userMessage)) {
@@ -1148,14 +1199,128 @@ async function executeToolCall(
 
       return {
         result: {
-          friend_requests: (friendReqs.data || []).map((r: any) => ({
-            ...r,
-            from_user: friendProfileMap.get(r.from_user_id) || null,
-          })),
-          team_requests: (teamReqs.data || []).map((r: any) => ({
-            ...r,
-            team: teamMap.get(r.team_id) || null,
-          })),
+          friend_requests: (friendReqs.data || []).map((r: any) => {
+            const profile = friendProfileMap.get(r.from_user_id) as { username: string; userid: string } | undefined;
+            return {
+              id: r.id,
+              created_at: r.created_at,
+              from_user: profile ? { username: profile.username, userid: profile.userid } : null,
+            };
+          }),
+          team_requests: (teamReqs.data || []).map((r: any) => {
+            const team = teamMap.get(r.team_id) as { name: string } | undefined;
+            return {
+              id: r.id,
+              created_at: r.created_at,
+              team: team ? { name: team.name } : null,
+            };
+          }),
+        },
+      };
+    }
+
+    case "remove_friend": {
+      const who = await resolveUser(args.user_query);
+      if (who.type === "error") return { result: { error: who.error } };
+      if (who.type === "none") return { result: { error: "User not found" } };
+      if (who.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple users. Which friend do you want to remove?",
+            matches: who.matches.map((u: any) => ({ username: u.username, userid: u.userid })),
+          },
+        };
+      }
+
+      const target = who.match;
+
+      if (target.user_id === userId) {
+        return { result: { error: "You cannot remove yourself as a friend" } };
+      }
+
+      // Check if they are friends
+      const { data: friendship } = await supabase
+        .from("friends")
+        .select("id")
+        .or(`and(user_id.eq.${userId},friend_id.eq.${target.user_id}),and(user_id.eq.${target.user_id},friend_id.eq.${userId})`)
+        .limit(1);
+
+      if (!friendship?.length) {
+        return { result: { error: `${target.username} is not in your friend list` } };
+      }
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll remove ${target.username} (@${target.userid}) from your friends list. This will also remove you from their friends list. Should I proceed?`,
+        };
+      }
+
+      // Delete both friendship directions
+      await supabase
+        .from("friends")
+        .delete()
+        .or(`and(user_id.eq.${userId},friend_id.eq.${target.user_id}),and(user_id.eq.${target.user_id},friend_id.eq.${userId})`);
+
+      return {
+        result: {
+          success: true,
+          message: `${target.username} (@${target.userid}) has been removed from your friends`,
+          action_type: "remove_friend",
+        },
+      };
+    }
+
+    case "set_looking_for_teammates": {
+      const teamRes = await resolveTeam(args.team_query, false, true); // must be leader
+      if (teamRes.type === "error") return { result: { error: teamRes.error } };
+      if (teamRes.type === "none") return { result: { error: "Team not found or you don't have permission to change this setting" } };
+      if (teamRes.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple teams. Which team do you want to update?",
+            matches: teamRes.matches.map((t: any) => ({ name: t.name })),
+          },
+        };
+      }
+
+      const team = teamRes.match;
+      const looking = Boolean(args.looking);
+      const visibility = args.visibility === "friends_only" ? "friends_only" : "anyone";
+
+      if (!pendingConfirmation) {
+        const visibilityText = visibility === "friends_only" ? "only your friends" : "anyone";
+        const message = looking
+          ? `I'll set team "${team.name}" as looking for teammates. ${visibilityText} will be able to see this and request to join.`
+          : `I'll turn off the "looking for teammates" status for team "${team.name}".`;
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `${message} Should I proceed?`,
+        };
+      }
+
+      const { error } = await supabase
+        .from("teams")
+        .update({
+          looking_for_teammates: looking,
+          looking_visibility: visibility,
+          updated_at: new Date().toISOString(),
+        })
+        .eq("id", team.id);
+
+      if (error) return { result: { error: error.message } };
+
+      return {
+        result: {
+          success: true,
+          message: looking
+            ? `Team "${team.name}" is now looking for teammates (visible to ${visibility === "friends_only" ? "friends only" : "anyone"})`
+            : `Team "${team.name}" is no longer looking for teammates`,
+          action_type: "set_looking_for_teammates",
         },
       };
     }
@@ -1302,34 +1467,42 @@ serve(async (req) => {
     // Build system prompt with user context - AI already knows who the user is
     let systemPrompt = `You are HackerBuddy, a helpful AI assistant for a hackathon community platform.
 
-CURRENT USER CONTEXT (you already know this - never ask for it):
-- User ID (UUID): ${user.id}
+CURRENT USER CONTEXT (you already know this - NEVER ask for any of this):
 - Username: ${profile?.username || "Unknown"}
 - User Handle: @${profile?.userid || "unknown"}
 
-CRITICAL RULES:
-1. You ALREADY KNOW the current user's identity. NEVER ask "what's your username" or "what's your user ID" - you have this information.
-2. When the user says "I" or "me" or "my", it refers to ${profile?.username || "the current user"} (${user.id}).
-3. Use the database as the source of truth for hackathons, teams, friends, and participations.
-4. When user mentions any hackathon name (even partially like "nation building" or "nationbuilding"), search for it - they likely mean a specific hackathon.
-5. If a tool returns {needs_selection: true}, show the options clearly and ask which one they mean.
-6. For any data-changing action (create, delete, leave, send request), always ask for confirmation first.
-7. When user says "leave" a team, it means the CURRENT USER (${profile?.username}) wants to leave, not remove someone else.
-8. Never invent links or hackathons. If a hackathon's url is missing, say it's missing but provide what info you have.
-9. Be concise and action-oriented.
+CRITICAL SECURITY RULES (NEVER VIOLATE):
+1. NEVER expose internal IDs (UUIDs), email addresses, passwords, or any sensitive data in your responses.
+2. NEVER show raw database identifiers - always use usernames and display names instead.
+3. When displaying user information, ONLY show: username, @handle. Nothing else.
+4. When showing multiple options for disambiguation, only show names - never IDs.
 
-IMPORTANT CONTEXT AWARENESS:
-- If user asks to "leave" or "delete" a team without specifying which one, first get their teams and ask which one.
-- If user mentions a partial name like "nation building case study", search for it - it likely matches a hackathon.
-- "Leave the team" = current user leaves. "Remove someone" = remove another person (requires leadership).
+CRITICAL BEHAVIORAL RULES:
+1. You ALREADY KNOW the current user's identity. NEVER ask "what's your username" or "who are you" - you have this information.
+2. When the user says "I" or "me" or "my", it refers to ${profile?.username || "the current user"} (@${profile?.userid || "unknown"}).
+3. When user mentions ANY partial name for hackathons/teams/users (like "nation building" or "nativers"), SEARCH FIRST, then:
+   - If exactly 1 match: proceed with that match
+   - If multiple matches: list them by NAME ONLY and ask which one
+   - If no matches: tell the user and ask for a more specific name
+4. For data-changing actions (create, delete, leave, send request), ALWAYS ask for confirmation first.
+5. When user says "leave" a team, it means the CURRENT USER (${profile?.username}) wants to leave - NOT remove someone else.
+6. Never invent links or hackathons. If info is missing from database, say so.
+7. Be concise and action-oriented.
+
+DISAMBIGUATION RULES:
+- If a hackathon/team/user search returns multiple matches, ALWAYS ask the user to clarify
+- Present options clearly by NAME only (e.g., "1. Team Alpha, 2. Team Beta")
+- Wait for user selection before proceeding
 
 Available capabilities:
-- Search hackathons by partial name (case-insensitive, multi-word)
-- Get official hackathon links from the database
+- Search hackathons by partial name
+- Get official hackathon links from the database  
 - View current hackathon participations
-- Create teams, leave teams, delete teams (with confirmation)
+- Create teams, leave teams, delete teams
 - Accept/send friend requests and team invitations
-- Search users by username/userid/UUID (partial supported)
+- Remove friends from friend list
+- Set team "looking for teammates" status (with visibility: anyone or friends_only)
+- Search users by username/userid
 - Web search for external information`;
 
     if (existingSummary?.summary) {
@@ -1366,17 +1539,29 @@ Available capabilities:
         { currentHackathonId }
       );
 
+      // Record learning feedback for confirmed actions
+      recordLearningFeedback(
+        supabase,
+        message,
+        result.result?.success ? result.result.message : result.result?.error || "Action failed",
+        [{ name: confirmedAction.name, arguments: confirmedAction.arguments }],
+        result.result?.success || false
+      );
+
       // Update summary in background
       if (shouldUpdateSummary) {
         updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
       }
 
+      const responseText = result.result?.success
+        ? `✅ ${result.result.message}`
+        : `❌ ${result.result?.error || "Action failed"}`;
+
       return new Response(
         JSON.stringify({
-          response: result.result?.success
-            ? `✅ ${result.result.message}`
-            : `❌ ${result.result?.error || "Action failed"}`,
+          response: sanitizeResponse(responseText, [user.id]),
           toolResults: [result.result],
+          actionCompleted: result.result?.action_type || confirmedAction.name,
         }),
         { headers: { ...corsHeaders, "Content-Type": "application/json" } }
       );

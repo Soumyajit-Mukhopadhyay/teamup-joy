@@ -11,6 +11,7 @@ import { Search, UserPlus, MessageCircle, X, Check, User, Clock } from 'lucide-r
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { isValidUUID } from '@/lib/validation';
+import { useAIActionRefresh } from '@/hooks/useAIActionRefresh';
 
 interface Profile {
   id: string;
@@ -46,6 +47,14 @@ const Friends = () => {
   const [searchResults, setSearchResults] = useState<Profile[]>([]);
   const [searching, setSearching] = useState(false);
   const [loading, setLoading] = useState(true);
+
+  // Listen for AI actions that affect friends
+  useAIActionRefresh({
+    actions: ['remove_friend', 'send_friend_request', 'accept_friend_request'],
+    onAction: () => {
+      fetchData();
+    },
+  });
 
   useEffect(() => {
     if (!user) {

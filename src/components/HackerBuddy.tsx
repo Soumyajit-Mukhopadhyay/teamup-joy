@@ -38,6 +38,13 @@ interface Message {
   };
 }
 
+// Custom event for AI actions that require UI refresh
+export const AI_ACTION_EVENT = 'hackerbuddy-action-completed';
+
+export function emitAIActionEvent(actionType: string) {
+  window.dispatchEvent(new CustomEvent(AI_ACTION_EVENT, { detail: { actionType } }));
+}
+
 const HackerBuddy = () => {
   const { user } = useAuth();
   const [isOpen, setIsOpen] = useState(false);
@@ -310,6 +317,12 @@ const HackerBuddy = () => {
           setPendingAction(data.pendingConfirmation);
         } else {
           setPendingAction(null);
+        }
+
+        // If an action was completed, emit event for UI refresh
+        if (data.actionCompleted) {
+          emitAIActionEvent(data.actionCompleted);
+          toast.success('Action completed');
         }
 
         const responseText: string = data.response || "I'm not sure how to help with that.";
