@@ -17,6 +17,7 @@ import FriendChat from "./pages/FriendChat";
 import UserProfile from "./pages/UserProfile";
 import AdminPanel from "./pages/AdminPanel";
 import TeamManage from "./pages/TeamManage";
+import ResetPassword from "./pages/ResetPassword";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -31,6 +32,7 @@ const App = () => (
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/auth" element={<Auth />} />
+            <Route path="/auth/reset" element={<ResetPassword />} />
             <Route path="/hackathon/:id" element={<HackathonDetail />} />
             <Route path="/hackathon/:hackathonId/team" element={<CreateTeam />} />
             <Route path="/teams" element={<Teams />} />
