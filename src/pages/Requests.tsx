@@ -8,6 +8,7 @@ import { toast } from 'sonner';
 import { Check, X, Users, Clock } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { format } from 'date-fns';
+import { usePendingRequests } from '@/hooks/usePendingRequests';
 
 interface TeamRequest {
   id: string;
@@ -32,6 +33,7 @@ const Requests = () => {
   const { user, loading: authLoading } = useAuth();
   const [requests, setRequests] = useState<TeamRequest[]>([]);
   const [loading, setLoading] = useState(true);
+  const { markAsViewed } = usePendingRequests();
 
   useEffect(() => {
     if (authLoading) return;
@@ -41,6 +43,7 @@ const Requests = () => {
       return;
     }
     fetchRequests();
+    markAsViewed();
   }, [user, authLoading]);
 
   const fetchRequests = async () => {
@@ -83,6 +86,26 @@ const Requests = () => {
     setLoading(false);
   };
 
+  const addHackathonParticipation = async (userId: string, hackathonId: string) => {
+    // Check if participation already exists
+    const { data: existing } = await supabase
+      .from('hackathon_participations')
+      .select('id')
+      .eq('user_id', userId)
+      .eq('hackathon_id', hackathonId)
+      .maybeSingle();
+
+    if (!existing) {
+      await supabase
+        .from('hackathon_participations')
+        .insert({
+          user_id: userId,
+          hackathon_id: hackathonId,
+          status: 'current',
+        });
+    }
+  };
+
   const handleAccept = async (request: TeamRequest) => {
     try {
       // Update request status
@@ -103,6 +126,11 @@ const Requests = () => {
         });
 
       if (memberError) throw memberError;
+
+      // Add hackathon participation
+      if (request.team?.hackathon_id) {
+        await addHackathonParticipation(user!.id, request.team.hackathon_id);
+      }
 
       toast.success('You joined the team!');
       setRequests(prev => prev.filter(r => r.id !== request.id));

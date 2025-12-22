@@ -5,10 +5,20 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Users, MessageCircle, Calendar, Settings } from 'lucide-react';
+import { Users, MessageCircle, Calendar, Settings, X } from 'lucide-react';
 import { hackathons } from '@/data/hackathons';
-import { format } from 'date-fns';
+import { format, parseISO, isAfter } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 
 interface Team {
   id: string;
@@ -25,6 +35,9 @@ const Teams = () => {
   const { user, loading: authLoading } = useAuth();
   const [teams, setTeams] = useState<Team[]>([]);
   const [loading, setLoading] = useState(true);
+  const [leaveDialogOpen, setLeaveDialogOpen] = useState(false);
+  const [selectedTeam, setSelectedTeam] = useState<Team | null>(null);
+  const [leavingTeam, setLeavingTeam] = useState(false);
 
   useEffect(() => {
     if (authLoading) return;
@@ -39,7 +52,6 @@ const Teams = () => {
   const fetchTeams = async () => {
     if (!user) return;
 
-    // Get teams where user is a member
     const { data: memberData, error: memberError } = await supabase
       .from('team_members')
       .select('team_id, role, is_leader')
@@ -59,7 +71,6 @@ const Teams = () => {
 
     const teamIds = memberData.map(m => m.team_id);
 
-    // Get team details
     const { data: teamsData, error: teamsError } = await supabase
       .from('teams')
       .select('*')
@@ -72,7 +83,6 @@ const Teams = () => {
       return;
     }
 
-    // Get member counts for each team
     const teamsWithCounts = await Promise.all(
       (teamsData || []).map(async (team) => {
         const { count } = await supabase
@@ -94,6 +104,61 @@ const Teams = () => {
   const getHackathonName = (hackathonId: string) => {
     const hackathon = hackathons.find(h => h.id === hackathonId);
     return hackathon?.name || 'Unknown Hackathon';
+  };
+
+  const getHackathon = (hackathonId: string) => {
+    return hackathons.find(h => h.id === hackathonId);
+  };
+
+  const isHackathonOngoing = (hackathonId: string) => {
+    const hackathon = getHackathon(hackathonId);
+    if (!hackathon) return false;
+    const endDate = parseISO(hackathon.endDate);
+    return isAfter(endDate, new Date());
+  };
+
+  const handleLeaveClick = (team: Team) => {
+    setSelectedTeam(team);
+    setLeaveDialogOpen(true);
+  };
+
+  const handleLeaveTeam = async () => {
+    if (!selectedTeam || !user) return;
+
+    setLeavingTeam(true);
+
+    try {
+      // Remove from team_members
+      const { error } = await supabase
+        .from('team_members')
+        .delete()
+        .eq('team_id', selectedTeam.id)
+        .eq('user_id', user.id);
+
+      if (error) throw error;
+
+      // Also remove hackathon participation if no more teams in that hackathon
+      const remainingTeams = teams.filter(
+        t => t.id !== selectedTeam.id && t.hackathon_id === selectedTeam.hackathon_id
+      );
+
+      if (remainingTeams.length === 0) {
+        await supabase
+          .from('hackathon_participations')
+          .delete()
+          .eq('user_id', user.id)
+          .eq('hackathon_id', selectedTeam.hackathon_id);
+      }
+
+      toast.success('Left the team successfully');
+      setTeams(prev => prev.filter(t => t.id !== selectedTeam.id));
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to leave team');
+    } finally {
+      setLeavingTeam(false);
+      setLeaveDialogOpen(false);
+      setSelectedTeam(null);
+    }
   };
 
   if (authLoading) {
@@ -141,51 +206,90 @@ const Teams = () => {
           </div>
         ) : (
           <div className="grid gap-4 md:grid-cols-2">
-            {teams.map((team) => (
-              <div key={team.id} className="glass-card p-5 card-hover animate-fade-in">
-                <div className="flex items-start justify-between mb-4">
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-lg font-semibold">{team.name}</h3>
-                      {team.is_leader && (
-                        <Badge variant="outline" className="text-xs">Leader</Badge>
-                      )}
+            {teams.map((team) => {
+              const hackathonOngoing = isHackathonOngoing(team.hackathon_id);
+              
+              return (
+                <div key={team.id} className="glass-card p-5 card-hover animate-fade-in relative">
+                  {/* Leave button */}
+                  <button
+                    onClick={() => handleLeaveClick(team)}
+                    className="absolute top-3 right-3 p-1 rounded-full hover:bg-destructive/20 text-muted-foreground hover:text-destructive transition-colors"
+                    title="Leave team"
+                  >
+                    <X className="h-4 w-4" />
+                  </button>
+
+                  <div className="flex items-start justify-between mb-4 pr-6">
+                    <div>
+                      <div className="flex items-center gap-2">
+                        <h3 className="text-lg font-semibold">{team.name}</h3>
+                        {team.is_leader && (
+                          <Badge variant="outline" className="text-xs">Leader</Badge>
+                        )}
+                      </div>
+                      <p className="text-sm text-muted-foreground">
+                        {getHackathonName(team.hackathon_id)}
+                      </p>
                     </div>
-                    <p className="text-sm text-muted-foreground">
-                      {getHackathonName(team.hackathon_id)}
-                    </p>
+                    <span className="flex items-center gap-1 text-sm text-muted-foreground">
+                      <Users className="h-4 w-4" />
+                      {team.member_count}
+                    </span>
                   </div>
-                  <span className="flex items-center gap-1 text-sm text-muted-foreground">
-                    <Users className="h-4 w-4" />
-                    {team.member_count}
-                  </span>
-                </div>
 
-                <div className="flex items-center gap-2 text-xs text-muted-foreground mb-4">
-                  <Calendar className="h-3 w-3" />
-                  <span>Created {format(new Date(team.created_at), 'MMM d, yyyy')}</span>
-                </div>
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground mb-4">
+                    <Calendar className="h-3 w-3" />
+                    <span>Created {format(new Date(team.created_at), 'MMM d, yyyy')}</span>
+                    {hackathonOngoing && (
+                      <Badge variant="secondary" className="ml-2 text-xs">Ongoing</Badge>
+                    )}
+                  </div>
 
-                <div className="flex gap-2">
-                  <Link to={`/team/${team.id}/chat`} className="flex-1">
-                    <Button variant="secondary" className="w-full gap-2">
-                      <MessageCircle className="h-4 w-4" />
-                      Team Chat
-                    </Button>
-                  </Link>
-                  {team.is_leader && (
-                    <Link to={`/team/${team.id}/manage`}>
-                      <Button variant="outline" size="icon">
-                        <Settings className="h-4 w-4" />
+                  <div className="flex gap-2">
+                    <Link to={`/team/${team.id}/chat`} className="flex-1">
+                      <Button variant="secondary" className="w-full gap-2">
+                        <MessageCircle className="h-4 w-4" />
+                        Team Chat
                       </Button>
                     </Link>
-                  )}
+                    {team.is_leader && (
+                      <Link to={`/team/${team.id}/manage`}>
+                        <Button variant="outline" size="icon">
+                          <Settings className="h-4 w-4" />
+                        </Button>
+                      </Link>
+                    )}
+                  </div>
                 </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </main>
+
+      {/* Leave Team Dialog */}
+      <AlertDialog open={leaveDialogOpen} onOpenChange={setLeaveDialogOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Leave Team</AlertDialogTitle>
+            <AlertDialogDescription>
+              Are you sure you want to leave "{selectedTeam?.name}"? 
+              You will no longer receive team updates or messages.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={leavingTeam}>Cancel</AlertDialogCancel>
+            <AlertDialogAction 
+              onClick={handleLeaveTeam} 
+              disabled={leavingTeam}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              {leavingTeam ? 'Leaving...' : 'Leave Team'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 };

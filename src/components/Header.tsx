@@ -11,15 +11,21 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import useIsAdmin from '@/hooks/useIsAdmin';
+import { usePendingRequests } from '@/hooks/usePendingRequests';
 
 const Header = () => {
   const { user, profile, signOut } = useAuth();
   const { isAdmin } = useIsAdmin();
+  const { hasNotification, markAsViewed } = usePendingRequests();
   const navigate = useNavigate();
 
   const handleSignOut = async () => {
     await signOut();
     navigate('/');
+  };
+
+  const handleRequestsClick = () => {
+    markAsViewed();
   };
 
   return (
@@ -48,10 +54,13 @@ const Header = () => {
                 </Button>
               </Link>
               
-              <Link to="/requests">
-                <Button variant="ghost" size="sm" className="gap-2">
+              <Link to="/requests" onClick={handleRequestsClick}>
+                <Button variant="ghost" size="sm" className="gap-2 relative">
                   <Bell className="h-4 w-4" />
                   Requests
+                  {hasNotification && (
+                    <span className="absolute -top-1 -right-1 h-3 w-3 bg-destructive rounded-full animate-pulse" />
+                  )}
                 </Button>
               </Link>
 
