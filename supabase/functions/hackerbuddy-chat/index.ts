@@ -1769,31 +1769,38 @@ When a user wants to ADD/SUBMIT a new hackathon:
 
       if (stream) {
         // SSE streaming for tool result summary
-        const summaryResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${LOVABLE_API_KEY}`,
-            "Content-Type": "application/json",
-          },
-          body: JSON.stringify({
-            model: "google/gemini-2.5-flash",
-            messages: summaryMessages,
-            stream: true,
-          }),
-        });
+        try {
+          const summaryResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              Authorization: `Bearer ${LOVABLE_API_KEY}`,
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              model: "google/gemini-2.5-flash",
+              messages: summaryMessages,
+              stream: true,
+            }),
+          });
 
-        if (!summaryResponse.ok || !summaryResponse.body) {
-          throw new Error("Streaming failed");
+          if (!summaryResponse.ok) {
+            const errorText = await summaryResponse.text();
+            console.error("Streaming summary failed:", summaryResponse.status, errorText);
+            // Fall back to non-streaming
+          } else if (summaryResponse.body) {
+            // Update summary in background
+            if (shouldUpdateSummary) {
+              updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
+            }
+
+            return new Response(summaryResponse.body, {
+              headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+            });
+          }
+        } catch (streamError) {
+          console.error("Stream error, falling back to non-streaming:", streamError);
         }
-
-        // Update summary in background
-        if (shouldUpdateSummary) {
-          updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
-        }
-
-        return new Response(summaryResponse.body, {
-          headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
-        });
+        // Fall through to non-streaming response below
       }
 
       const summaryResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -1825,32 +1832,39 @@ When a user wants to ADD/SUBMIT a new hackathon:
 
     // No tool calls - stream or return directly
     if (stream) {
-      // Make a new streaming request
-      const streamResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          Authorization: `Bearer ${LOVABLE_API_KEY}`,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          model: "google/gemini-2.5-flash",
-          messages,
-          stream: true,
-        }),
-      });
+      try {
+        // Make a new streaming request
+        const streamResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${LOVABLE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "google/gemini-2.5-flash",
+            messages,
+            stream: true,
+          }),
+        });
 
-      if (!streamResponse.ok || !streamResponse.body) {
-        throw new Error("Streaming failed");
+        if (!streamResponse.ok) {
+          const errorText = await streamResponse.text();
+          console.error("Streaming failed:", streamResponse.status, errorText);
+          // Fall through to non-streaming response
+        } else if (streamResponse.body) {
+          // Update summary in background
+          if (shouldUpdateSummary) {
+            updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
+          }
+
+          return new Response(streamResponse.body, {
+            headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+          });
+        }
+      } catch (streamError) {
+        console.error("Stream error, falling back to non-streaming:", streamError);
       }
-
-      // Update summary in background
-      if (shouldUpdateSummary) {
-        updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
-      }
-
-      return new Response(streamResponse.body, {
-        headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
-      });
+      // Fall through to non-streaming response below
     }
 
     // Update summary in background
