@@ -2254,45 +2254,14 @@ Example 4 - "Send friend request to John"
         })),
       ];
 
-      if (stream) {
-        // SSE streaming for tool result summary
-        try {
-          const summaryResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${LOVABLE_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model: "google/gemini-2.5-flash",
-              messages: summaryMessages,
-              stream: true,
-            }),
-          });
+      // Always return JSON for tool results so the client can execute actions
+      // (opening links/populating clipboard cannot reliably happen if we only stream text).
 
-          if (!summaryResponse.ok) {
-            const errorText = await summaryResponse.text();
-            console.error("Streaming summary failed:", summaryResponse.status, errorText);
-            // Fall back to non-streaming
-          } else if (summaryResponse.body) {
-            // Update summary in background
-            if (shouldUpdateSummary) {
-              updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
-            }
-
-            return new Response(summaryResponse.body, {
-              headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
-            });
-          }
-        } catch (streamError) {
-          console.error("Stream error, falling back to non-streaming:", streamError);
-        }
-        // Fall through to non-streaming response below
-      }
 
       const summaryResponse = await callAIWithRetry({
         model: "google/gemini-2.5-flash",
         messages: summaryMessages,
+        stream: false,
       });
 
       const summaryData = await summaryResponse.json();
