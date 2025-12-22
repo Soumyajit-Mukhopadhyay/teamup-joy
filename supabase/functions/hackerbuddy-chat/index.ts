@@ -261,6 +261,36 @@ const tools = [
       parameters: { type: "object", properties: {}, required: [] },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "remove_friend",
+      description: "Remove a friend from the user's friend list. REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          user_query: { type: "string", description: "username, userid, or UUID (partial ok)" },
+        },
+        required: ["user_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "set_looking_for_teammates",
+      description: "Set a team's 'looking for teammates' status. Only team leaders can do this. REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          team_query: { type: "string", description: "Team name or team ID (partial ok)" },
+          looking: { type: "boolean", description: "Whether the team is looking for teammates" },
+          visibility: { type: "string", enum: ["anyone", "friends_only"], description: "Who can see this (default: anyone)" },
+        },
+        required: ["team_query", "looking"],
+      },
+    },
+  },
 ];
 
 // Guardrails - actions that require confirmation
@@ -273,6 +303,8 @@ const CONFIRMATION_REQUIRED_ACTIONS = [
   "delete_team",
   "invite_to_team",
   "submit_hackathon",
+  "remove_friend",
+  "set_looking_for_teammates",
 ];
 
 // Blocked/dangerous actions

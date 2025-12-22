@@ -11,27 +11,17 @@ import {
 } from '@/components/ui/dropdown-menu';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import useIsAdmin from '@/hooks/useIsAdmin';
-import { usePendingRequests } from '@/hooks/usePendingRequests';
-import { usePendingFriendRequests } from '@/hooks/usePendingFriendRequests';
+import { useNotifications } from '@/hooks/useNotifications';
 
 const Header = () => {
   const { user, profile, signOut } = useAuth();
   const { isAdmin } = useIsAdmin();
-  const { hasNotification: hasTeamNotification, markAsViewed: markTeamAsViewed } = usePendingRequests();
-  const { hasNotification: hasFriendNotification, markAsViewed: markFriendAsViewed } = usePendingFriendRequests();
+  const { unreadCount, hasNotification } = useNotifications();
   const navigate = useNavigate();
 
   const handleSignOut = async () => {
     await signOut();
     navigate('/');
-  };
-
-  const handleRequestsClick = () => {
-    markTeamAsViewed();
-  };
-
-  const handleFriendsClick = () => {
-    markFriendAsViewed();
   };
 
   return (
@@ -53,22 +43,21 @@ const Header = () => {
                 </Button>
               </Link>
               
-              <Link to="/friends" onClick={handleFriendsClick}>
-                <Button variant="ghost" size="sm" className="gap-2 relative">
+              <Link to="/friends">
+                <Button variant="ghost" size="sm" className="gap-2">
                   <Users className="h-4 w-4" />
                   Friends
-                  {hasFriendNotification && (
-                    <span className="absolute -top-1 -right-1 h-3 w-3 bg-destructive rounded-full animate-pulse" />
-                  )}
                 </Button>
               </Link>
               
-              <Link to="/requests" onClick={handleRequestsClick}>
+              <Link to="/notifications">
                 <Button variant="ghost" size="sm" className="gap-2 relative">
                   <Bell className="h-4 w-4" />
-                  Requests
-                  {hasTeamNotification && (
-                    <span className="absolute -top-1 -right-1 h-3 w-3 bg-destructive rounded-full animate-pulse" />
+                  Notifications
+                  {hasNotification && (
+                    <span className="absolute -top-1 -right-1 min-w-[1.25rem] h-5 bg-destructive text-destructive-foreground text-xs rounded-full flex items-center justify-center px-1 animate-pulse">
+                      {unreadCount > 99 ? '99+' : unreadCount}
+                    </span>
                   )}
                 </Button>
               </Link>

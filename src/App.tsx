@@ -9,7 +9,7 @@ import Index from "./pages/Index";
 import Auth from "./pages/Auth";
 import CreateTeam from "./pages/CreateTeam";
 import Teams from "./pages/Teams";
-import Requests from "./pages/Requests";
+import Notifications from "./pages/Notifications";
 import TeamChat from "./pages/TeamChat";
 import HackathonDetail from "./pages/HackathonDetail";
 import Profile from "./pages/Profile";
@@ -38,7 +38,7 @@ const App = () => (
             <Route path="/hackathon/:hackathonId/team" element={<CreateTeam />} />
             <Route path="/teams" element={<Teams />} />
             <Route path="/team/:teamId/manage" element={<TeamManage />} />
-            <Route path="/requests" element={<Requests />} />
+            <Route path="/notifications" element={<Notifications />} />
             <Route path="/team/:teamId/chat" element={<TeamChat />} />
             <Route path="/profile" element={<Profile />} />
             <Route path="/friends" element={<Friends />} />
