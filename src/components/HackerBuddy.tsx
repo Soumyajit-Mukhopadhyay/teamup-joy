@@ -32,12 +32,17 @@ interface PendingAction {
   message: string;
 }
 
+type ChatAction =
+  | { type: 'open_link'; label: string; url: string }
+  | { type: 'copy_to_clipboard'; label: string; text: string };
+
 interface Message {
   id: string;
   role: 'user' | 'assistant';
   content: string;
   timestamp: Date;
   pendingConfirmation?: PendingAction;
+  actions?: ChatAction[];
 }
 
 // Custom event for AI actions that require UI refresh
@@ -77,12 +82,9 @@ const HackerBuddy = () => {
           if (action.url) {
             const opened = window.open(action.url, '_blank', 'noopener,noreferrer');
             // Some browsers block window.open when it happens after async work.
-            // If blocked, copy the link so the user can still open it.
+            // If blocked, the chat will still render an "Open" button + URL for manual click.
             if (!opened) {
-              navigator.clipboard
-                .writeText(action.url)
-                .then(() => toast.info('Popup blocked — link copied to clipboard'))
-                .catch(() => toast.info('Popup blocked — long-press to copy the link from chat'));
+              toast.info('Popup blocked — use the Open button in chat');
             }
           }
           break;
@@ -95,7 +97,7 @@ const HackerBuddy = () => {
               })
               .catch((err) => {
                 console.error('Failed to copy:', err);
-                toast.error('Failed to copy link');
+                toast.info('Copy blocked — use the Copy button in chat');
               });
           }
           break;
@@ -103,6 +105,38 @@ const HackerBuddy = () => {
     },
     []
   );
+
+  const extractChatActions = useCallback((toolResults: any[] | undefined): ChatAction[] => {
+    if (!toolResults?.length) return [];
+
+    const actions: ChatAction[] = [];
+    for (const tr of toolResults) {
+      const action = tr?.action ?? tr?.result?.action;
+      if (!action?.type) continue;
+
+      if (action.type === 'open_link' && typeof action.url === 'string') {
+        const isCalendar = action.url.includes('calendar.google.com');
+        actions.push({
+          type: 'open_link',
+          label: isCalendar ? 'Open calendar' : 'Open link',
+          url: action.url,
+        });
+      }
+
+      if (action.type === 'copy_to_clipboard' && typeof action.text === 'string') {
+        actions.push({ type: 'copy_to_clipboard', label: 'Copy link', text: action.text });
+      }
+    }
+
+    // Dedupe
+    const seen = new Set<string>();
+    return actions.filter((a) => {
+      const key = a.type === 'open_link' ? `open:${a.url}` : `copy:${a.text}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  }, []);
 
   // Load messages from database on mount
   useEffect(() => {
@@ -276,11 +310,13 @@ const HackerBuddy = () => {
         });
 
         // Add response to messages
+        const assistantActions = extractChatActions(result.toolResults);
         const assistantMessage: Message = {
           id: `temp-${Date.now()}-${Math.random()}`,
           role: 'assistant',
           content: result.response,
           timestamp: new Date(),
+          actions: assistantActions,
         };
         setMessages((prev) => [...prev, assistantMessage]);
         await saveMessage('assistant', result.response);
@@ -504,6 +540,7 @@ const HackerBuddy = () => {
         }
 
         // Execute any browser actions from tool results
+        const assistantActions = extractChatActions(data.toolResults);
         if (data.toolResults) {
           for (const tr of data.toolResults) {
             const action = tr?.action ?? tr?.result?.action;
@@ -519,6 +556,7 @@ const HackerBuddy = () => {
           content: responseText,
           timestamp: new Date(),
           pendingConfirmation: data.pendingConfirmation,
+          actions: assistantActions,
         };
         setMessages((prev) => [...prev, assistantMessage]);
         await saveMessage('assistant', responseText);
@@ -630,7 +668,43 @@ const HackerBuddy = () => {
                         message.role === 'user' ? 'bg-primary text-primary-foreground' : 'bg-muted'
                       }`}
                     >
-                      <p className="text-sm whitespace-pre-wrap break-words overflow-wrap-anywhere">{message.content}</p>
+                      <p className="text-sm whitespace-pre-wrap break-words overflow-wrap-anywhere">
+                        {message.content}
+                      </p>
+
+                      {message.role === 'assistant' && message.actions?.length ? (
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {message.actions.map((a, idx) => {
+                            if (a.type === 'open_link') {
+                              return (
+                                <Button key={`${a.type}-${idx}`} size="sm" variant="secondary" asChild>
+                                  <a href={a.url} target="_blank" rel="noreferrer">
+                                    {a.label}
+                                  </a>
+                                </Button>
+                              );
+                            }
+
+                            return (
+                              <Button
+                                key={`${a.type}-${idx}`}
+                                size="sm"
+                                variant="outline"
+                                onClick={() => executeAction({ type: 'copy_to_clipboard', text: a.text })}
+                              >
+                                {a.label}
+                              </Button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+
+                      {message.role === 'assistant' && message.actions?.some((a) => a.type === 'copy_to_clipboard') ? (
+                        <p className="mt-2 text-xs text-muted-foreground break-all">
+                          {(message.actions.find((a) => a.type === 'copy_to_clipboard') as any)?.text}
+                        </p>
+                      ) : null}
+
                       <p className="text-xs opacity-60 mt-1">
                         {message.timestamp.toLocaleTimeString([], {
                           hour: '2-digit',

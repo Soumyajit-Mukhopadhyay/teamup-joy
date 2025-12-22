@@ -179,6 +179,24 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "leave_all_teams_for_hackathon",
+      description:
+        "Leave ALL teams the current user is a member of for a given hackathon (by name/slug/id). REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          hackathon_query: {
+            type: "string",
+            description: "Hackathon name/slug/id (partial ok)",
+          },
+        },
+        required: ["hackathon_query"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "delete_team",
       description:
         "Delete a team. Only the team creator/leader can delete a team. REQUIRES USER CONFIRMATION.",
@@ -379,6 +397,7 @@ const CONFIRMATION_REQUIRED_ACTIONS = [
   "accept_team_request",
   "create_team",
   "leave_team",
+  "leave_all_teams_for_hackathon",
   "delete_team",
   "invite_to_team",
   "submit_hackathon",
@@ -1141,6 +1160,93 @@ async function executeToolCall(
       };
     }
 
+    case "leave_all_teams_for_hackathon": {
+      const resolved = await resolveHackathon(args.hackathon_query);
+      if (resolved.type === "error") return { result: { error: resolved.error } };
+      if (resolved.type === "none") return { result: { error: "Hackathon not found" } };
+      if (resolved.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple hackathons. Which one do you want to leave all teams for?",
+            matches: resolved.matches.map((h: any) => ({ name: h.name, slug: h.slug })),
+          },
+        };
+      }
+
+      const h = resolved.match;
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll remove you from ALL of your teams in "${h.name}". Should I proceed?`,
+        };
+      }
+
+      const { data: memberships, error: memErr } = await supabase
+        .from("team_members")
+        .select("team_id")
+        .eq("user_id", userId);
+
+      if (memErr) return { result: { error: memErr.message } };
+
+      const teamIds = Array.from(new Set((memberships || []).map((m: any) => m.team_id)));
+      if (teamIds.length === 0) {
+        return {
+          result: {
+            success: true,
+            action_type: "leave_all_teams_for_hackathon",
+            message: "You are not currently a member of any teams.",
+            left_teams: [],
+          },
+        };
+      }
+
+      const { data: teams, error: teamsErr } = await supabase
+        .from("teams")
+        .select("id, name, hackathon_id")
+        .in("id", teamIds);
+
+      if (teamsErr) return { result: { error: teamsErr.message } };
+
+      const hackathonIds = [h.slug, h.id].filter(Boolean);
+      const matching = (teams || []).filter((t: any) => hackathonIds.includes(t.hackathon_id));
+
+      if (matching.length === 0) {
+        return {
+          result: {
+            success: true,
+            action_type: "leave_all_teams_for_hackathon",
+            message: `You're not a member of any teams for "${h.name}".`,
+            left_teams: [],
+          },
+        };
+      }
+
+      const { error: leaveErr } = await supabase
+        .from("team_members")
+        .delete()
+        .eq("user_id", userId)
+        .in(
+          "team_id",
+          matching.map((t: any) => t.id)
+        );
+
+      if (leaveErr) return { result: { error: leaveErr.message } };
+
+      return {
+        result: {
+          success: true,
+          action_type: "leave_all_teams_for_hackathon",
+          message: `You have left ${matching.length} team(s) in "${h.name}": ${matching
+            .map((t: any) => t.name)
+            .join(", ")}`,
+          left_teams: matching.map((t: any) => ({ name: t.name })),
+        },
+      };
+    }
+
     case "delete_team": {
       const teamRes = await resolveTeam(args.team_query, false, true); // must be leader/creator
       if (teamRes.type === "error") return { result: { error: teamRes.error } };
@@ -1669,7 +1775,7 @@ async function executeToolCall(
       const h = res.match;
       const startDate = new Date(h.start_date);
       const endDate = new Date(h.end_date);
-      
+
       const formatGoogleDate = (date: Date) => {
         return date.toISOString().replace(/[-:]/g, "").split(".")[0] + "Z";
       };
@@ -1678,9 +1784,11 @@ async function executeToolCall(
 
       return {
         result: {
+          success: true,
+          action_type: "get_hackathon_calendar_link",
           hackathon: h.name,
           calendar_link: calendarUrl,
-          message: `📅 Opening Google Calendar to add "${h.name}"...`,
+          message: `📅 Calendar link ready for "${h.name}".`,
           action: {
             type: "open_link",
             url: calendarUrl,
@@ -1708,10 +1816,12 @@ async function executeToolCall(
 
       return {
         result: {
+          success: true,
+          action_type: "get_hackathon_share_link",
           hackathon: h.name,
           share_link: shareUrl,
           official_url: h.url || null,
-          message: `📋 Copied share link for "${h.name}" to clipboard!`,
+          message: `📋 Share link ready for "${h.name}".`,
           action: {
             type: "copy_to_clipboard",
             text: shareUrl,
@@ -1739,9 +1849,11 @@ async function executeToolCall(
         const detailsPage = `https://hackerbuddy.lovable.app/hackathon/${h.slug}`;
         return {
           result: {
+            success: true,
+            action_type: "visit_hackathon_website",
             hackathon: h.name,
             has_url: false,
-            message: `The official website for "${h.name}" is not yet available. Opening the hackathon details page instead...`,
+            message: `Official website for "${h.name}" is not available yet. Opening the hackathon page instead.`,
             details_page: detailsPage,
             action: {
               type: "open_link",
@@ -1753,6 +1865,8 @@ async function executeToolCall(
 
       return {
         result: {
+          success: true,
+          action_type: "visit_hackathon_website",
           hackathon: h.name,
           has_url: true,
           url: h.url,
@@ -1973,6 +2087,9 @@ BEHAVIORAL RULES
 4. Data-changing actions require confirmation (but batch them together)
 5. Never invent data - if missing, say so
 6. Be CONCISE and action-oriented
+7. DATABASE-FIRST: For friends/teams/requests state, ALWAYS call get_user_friends / get_user_teams / get_pending_requests first. Do NOT rely on chat memory.
+8. HACKATHON QUICK ACTIONS: For "open website", "add to calendar", or "share link", ALWAYS call the relevant tool and only then respond.
+9. "Leave all my teams in hackathon X" MUST use leave_all_teams_for_hackathon (single tool call).
 
 ═══════════════════════════════════════════════════════════════
 CAPABILITIES
@@ -1985,7 +2102,7 @@ CAPABILITIES
 - get_hackathon_share_link: Shareable URL
 - visit_hackathon_website: Official website (says "updating soon" if no URL)
 - create_team: Create a team for hackathon
-- leave_team, delete_team: Team management
+- leave_team, leave_all_teams_for_hackathon, delete_team: Team management
 - remove_team_member: Remove member (leaders only)
 - send_friend_request, accept_friend_request: Friend management
 - remove_friend: Remove from friend list
@@ -2055,12 +2172,16 @@ Example 4 - "Send friend request to John"
       );
 
       // Record learning feedback for confirmed actions
+      const confirmedOk = !!result.result && !result.result.error;
+      const confirmedMsg =
+        result.result?.message || (confirmedOk ? "Action completed." : "Action failed");
+
       recordLearningFeedback(
         supabase,
         message,
-        result.result?.success ? result.result.message : result.result?.error || "Action failed",
+        confirmedMsg,
         [{ name: confirmedAction.name, arguments: confirmedAction.arguments }],
-        result.result?.success || false
+        confirmedOk
       );
 
       // Update summary in background
@@ -2068,8 +2189,8 @@ Example 4 - "Send friend request to John"
         updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
       }
 
-      const responseText = result.result?.success
-        ? `✅ ${result.result.message}`
+      const responseText = confirmedOk
+        ? `✅ ${confirmedMsg}`
         : `❌ ${result.result?.error || "Action failed"}`;
 
       return new Response(
