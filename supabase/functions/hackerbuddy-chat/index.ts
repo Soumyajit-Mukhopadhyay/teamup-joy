@@ -1562,7 +1562,20 @@ serve(async (req) => {
     const existingSummary = await getConversationSummary(supabase, user.id);
 
     // Build system prompt with user context - AI already knows who the user is
+    const now = new Date();
+    const formattedDateTime = now.toLocaleString("en-US", {
+      weekday: "long",
+      year: "numeric",
+      month: "long",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+      timeZoneName: "short",
+    });
+    
     let systemPrompt = `You are HackerBuddy, a helpful AI assistant for a hackathon community platform.
+
+CURRENT DATE AND TIME: ${formattedDateTime}
 
 CURRENT USER CONTEXT (you already know this - NEVER ask for any of this):
 - Username: ${profile?.username || "Unknown"}
