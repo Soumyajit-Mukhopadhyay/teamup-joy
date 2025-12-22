@@ -104,14 +104,58 @@ export type Database = {
         }
         Relationships: []
       }
+      ai_learned_patterns: {
+        Row: {
+          created_at: string
+          example_request: string | null
+          example_response: string | null
+          failure_count: number
+          id: string
+          last_used_at: string
+          pattern_hash: string
+          request_pattern: string
+          success_count: number
+          tool_sequence: string[]
+        }
+        Insert: {
+          created_at?: string
+          example_request?: string | null
+          example_response?: string | null
+          failure_count?: number
+          id?: string
+          last_used_at?: string
+          pattern_hash: string
+          request_pattern: string
+          success_count?: number
+          tool_sequence: string[]
+        }
+        Update: {
+          created_at?: string
+          example_request?: string | null
+          example_response?: string | null
+          failure_count?: number
+          id?: string
+          last_used_at?: string
+          pattern_hash?: string
+          request_pattern?: string
+          success_count?: number
+          tool_sequence?: string[]
+        }
+        Relationships: []
+      }
       ai_learning_feedback: {
         Row: {
           ai_response: string
           conversation_id: string | null
           created_at: string
+          execution_time_ms: number | null
           feedback_notes: string | null
           id: string
+          multi_task_count: number | null
+          pattern_hash: string | null
+          request_type: string | null
           tool_calls: Json | null
+          tool_sequence: string[] | null
           user_message: string
           user_rating: number | null
           was_successful: boolean | null
@@ -120,9 +164,14 @@ export type Database = {
           ai_response: string
           conversation_id?: string | null
           created_at?: string
+          execution_time_ms?: number | null
           feedback_notes?: string | null
           id?: string
+          multi_task_count?: number | null
+          pattern_hash?: string | null
+          request_type?: string | null
           tool_calls?: Json | null
+          tool_sequence?: string[] | null
           user_message: string
           user_rating?: number | null
           was_successful?: boolean | null
@@ -131,9 +180,14 @@ export type Database = {
           ai_response?: string
           conversation_id?: string | null
           created_at?: string
+          execution_time_ms?: number | null
           feedback_notes?: string | null
           id?: string
+          multi_task_count?: number | null
+          pattern_hash?: string | null
+          request_type?: string | null
           tool_calls?: Json | null
+          tool_sequence?: string[] | null
           user_message?: string
           user_rating?: number | null
           was_successful?: boolean | null

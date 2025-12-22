@@ -473,23 +473,199 @@ function sanitizeResponse(text: string): string {
   return sanitized.trim();
 }
 
-// Record interaction for learning feedback
+// Generate a pattern hash from user message for pattern matching
+function generatePatternHash(message: string): string {
+  // Normalize the message: lowercase, remove specific names/numbers, keep action words
+  const normalized = message
+    .toLowerCase()
+    .replace(/['"]/g, '')
+    .replace(/\b\d+\b/g, 'NUM')
+    .replace(/\b[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}\b/gi, 'UUID')
+    .replace(/@\w+/g, '@USER')
+    .replace(/\b(team\d+|team\s*\d+)\b/gi, 'TEAMNAME')
+    .trim();
+  
+  // Extract action keywords
+  const actionWords = ['create', 'add', 'remove', 'delete', 'leave', 'join', 'send', 'accept', 'invite', 'search', 'find', 'open', 'share', 'calendar'];
+  const foundActions = actionWords.filter(word => normalized.includes(word)).sort().join('_');
+  
+  // Simple hash based on action pattern
+  return foundActions || 'general';
+}
+
+// Classify request type for pattern learning
+function classifyRequestType(toolCalls: any[]): string {
+  if (!toolCalls?.length) return 'conversation';
+  
+  const toolNames = toolCalls.map(t => t.name || t.function?.name).filter(Boolean);
+  
+  if (toolNames.length > 2) return 'multi_task_complex';
+  if (toolNames.length === 2) return 'multi_task_simple';
+  
+  if (toolNames.some(n => n?.includes('team'))) return 'team_management';
+  if (toolNames.some(n => n?.includes('friend'))) return 'friend_management';
+  if (toolNames.some(n => n?.includes('hackathon'))) return 'hackathon_action';
+  if (toolNames.some(n => n?.includes('navigate'))) return 'navigation';
+  
+  return 'single_task';
+}
+
+// Record interaction for learning feedback with enhanced pattern tracking
 async function recordLearningFeedback(
   supabase: any,
   userMessage: string,
   aiResponse: string,
   toolCalls: any[] | null,
-  wasSuccessful: boolean | null
+  wasSuccessful: boolean | null,
+  executionTimeMs?: number
 ): Promise<void> {
   try {
+    const toolSequence = toolCalls?.map(t => t.name || t.function?.name).filter(Boolean) || [];
+    const patternHash = generatePatternHash(userMessage);
+    const requestType = classifyRequestType(toolCalls || []);
+    
+    // Record the feedback
     await supabase.from("ai_learning_feedback").insert({
-      user_message: userMessage.slice(0, 2000), // Limit length
+      user_message: userMessage.slice(0, 2000),
       ai_response: aiResponse.slice(0, 2000),
       tool_calls: toolCalls,
       was_successful: wasSuccessful,
+      tool_sequence: toolSequence,
+      request_type: requestType,
+      multi_task_count: toolSequence.length,
+      execution_time_ms: executionTimeMs,
+      pattern_hash: patternHash,
     });
+    
+    // If successful, update or create learned pattern
+    if (wasSuccessful && toolSequence.length > 0) {
+      await updateLearnedPattern(supabase, patternHash, userMessage, aiResponse, toolSequence);
+    }
   } catch (e) {
     console.error("Failed to record learning feedback:", e);
+  }
+}
+
+// Update or create a learned pattern based on successful interaction
+async function updateLearnedPattern(
+  supabase: any,
+  patternHash: string,
+  userMessage: string,
+  aiResponse: string,
+  toolSequence: string[]
+): Promise<void> {
+  try {
+    // Try to find existing pattern
+    const { data: existing } = await supabase
+      .from("ai_learned_patterns")
+      .select("id, success_count")
+      .eq("pattern_hash", patternHash)
+      .maybeSingle();
+    
+    if (existing) {
+      // Increment success count
+      await supabase
+        .from("ai_learned_patterns")
+        .update({
+          success_count: existing.success_count + 1,
+          last_used_at: new Date().toISOString(),
+        })
+        .eq("id", existing.id);
+    } else {
+      // Create new pattern
+      await supabase.from("ai_learned_patterns").insert({
+        pattern_hash: patternHash,
+        request_pattern: patternHash,
+        tool_sequence: toolSequence,
+        example_request: userMessage.slice(0, 500),
+        example_response: aiResponse.slice(0, 500),
+      });
+    }
+  } catch (e) {
+    console.error("Failed to update learned pattern:", e);
+  }
+}
+
+// Record a failed pattern
+async function recordPatternFailure(supabase: any, patternHash: string): Promise<void> {
+  try {
+    const { data: existing } = await supabase
+      .from("ai_learned_patterns")
+      .select("id, failure_count")
+      .eq("pattern_hash", patternHash)
+      .maybeSingle();
+    
+    if (existing) {
+      await supabase
+        .from("ai_learned_patterns")
+        .update({ failure_count: existing.failure_count + 1 })
+        .eq("id", existing.id);
+    }
+  } catch (e) {
+    console.error("Failed to record pattern failure:", e);
+  }
+}
+
+// Get relevant learned patterns to inject into system prompt
+async function getLearnedPatterns(supabase: any, limit = 5): Promise<string> {
+  try {
+    const { data: patterns } = await supabase
+      .from("ai_learned_patterns")
+      .select("request_pattern, tool_sequence, example_request, success_count, failure_count")
+      .order("success_count", { ascending: false })
+      .limit(limit);
+    
+    if (!patterns?.length) return "";
+    
+    // Filter to patterns with good success rate
+    const goodPatterns = patterns.filter((p: any) => {
+      const total = p.success_count + p.failure_count;
+      const successRate = total > 0 ? p.success_count / total : 0;
+      return successRate >= 0.7 && p.success_count >= 2;
+    });
+    
+    if (!goodPatterns.length) return "";
+    
+    const examples = goodPatterns.map((p: any) => {
+      const tools = p.tool_sequence.join(" → ");
+      return `• "${p.example_request?.slice(0, 100)}..." → ${tools} (${p.success_count} successes)`;
+    }).join("\n");
+    
+    return `\n═══════════════════════════════════════════════════════════════
+LEARNED PATTERNS (from successful past interactions)
+═══════════════════════════════════════════════════════════════
+${examples}
+
+Use these as guidance for similar requests.\n`;
+  } catch (e) {
+    console.error("Failed to get learned patterns:", e);
+    return "";
+  }
+}
+
+// Get recent successful tool sequences for similar request types
+async function getSimilarSuccessfulPatterns(supabase: any, requestType: string): Promise<string> {
+  try {
+    const { data: recentSuccess } = await supabase
+      .from("ai_learning_feedback")
+      .select("user_message, tool_sequence")
+      .eq("request_type", requestType)
+      .eq("was_successful", true)
+      .order("created_at", { ascending: false })
+      .limit(3);
+    
+    if (!recentSuccess?.length) return "";
+    
+    const examples = recentSuccess
+      .filter((r: any) => r.tool_sequence?.length > 0)
+      .map((r: any) => `• "${r.user_message?.slice(0, 80)}..." → [${r.tool_sequence.join(", ")}]`)
+      .join("\n");
+    
+    if (!examples) return "";
+    
+    return `\nRecent successful ${requestType} patterns:\n${examples}\n`;
+  } catch (e) {
+    return "";
   }
 }
 
@@ -2231,6 +2407,12 @@ Example 5 - "Where is the friends page?"
 → Tell them: "The Friends page is at /friends. You can also find it in the navigation bar at the top. Would you like me to take you there?"
 → If they say yes, use navigate_to_page(path="/friends")`;
 
+    // Inject learned patterns into system prompt
+    const learnedPatterns = await getLearnedPatterns(supabase);
+    if (learnedPatterns) {
+      systemPrompt += learnedPatterns;
+    }
+
     if (existingSummary?.summary) {
       systemPrompt += `\n\nPrevious conversation summary:\n${existingSummary.summary}`;
     }
@@ -2239,6 +2421,9 @@ Example 5 - "Where is the friends page?"
     if (!LOVABLE_API_KEY) {
       throw new Error("LOVABLE_API_KEY is not configured");
     }
+
+    // Track execution time for learning
+    const executionStartTime = Date.now();
 
     // Build messages for AI (last 20)
     const recentHistory = (conversationHistory || []).slice(-20);
@@ -2270,13 +2455,22 @@ Example 5 - "Where is the friends page?"
       const confirmedMsg =
         result.result?.message || (confirmedOk ? "Action completed." : "Action failed");
 
+      const executionTime = Date.now() - executionStartTime;
+      const patternHash = generatePatternHash(message);
+      
       recordLearningFeedback(
         supabase,
         message,
         confirmedMsg,
         [{ name: confirmedAction.name, arguments: confirmedAction.arguments }],
-        confirmedOk
+        confirmedOk,
+        executionTime
       );
+
+      // Track pattern failure if action failed
+      if (!confirmedOk) {
+        recordPatternFailure(supabase, patternHash);
+      }
 
       // Update summary in background
       if (shouldUpdateSummary) {
@@ -2482,6 +2676,27 @@ Example 5 - "Where is the friends page?"
       const summaryData = await summaryResponse.json();
       const summaryContent =
         summaryData.choices?.[0]?.message?.content || "I completed the action.";
+
+      // Record learning feedback for successful tool execution
+      const executionTime = Date.now() - executionStartTime;
+      const allToolsSucceeded = toolResults.every((tr: any) => !tr.result?.error);
+      recordLearningFeedback(
+        supabase,
+        message,
+        summaryContent,
+        choice.message.tool_calls.map((tc: any) => ({ 
+          name: tc.function.name, 
+          arguments: JSON.parse(tc.function.arguments || "{}") 
+        })),
+        allToolsSucceeded,
+        executionTime
+      );
+
+      // Track failures if any tool failed
+      if (!allToolsSucceeded) {
+        const patternHash = generatePatternHash(message);
+        recordPatternFailure(supabase, patternHash);
+      }
 
       // Update summary in background
       if (shouldUpdateSummary) {
