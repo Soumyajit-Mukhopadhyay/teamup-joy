@@ -165,6 +165,7 @@ export type Database = {
           region: string
           reviewed_at: string | null
           reviewed_by: string | null
+          slug: string
           start_date: string
           status: string
           submitted_by: string | null
@@ -184,6 +185,7 @@ export type Database = {
           region?: string
           reviewed_at?: string | null
           reviewed_by?: string | null
+          slug: string
           start_date: string
           status?: string
           submitted_by?: string | null
@@ -203,6 +205,7 @@ export type Database = {
           region?: string
           reviewed_at?: string | null
           reviewed_by?: string | null
+          slug?: string
           start_date?: string
           status?: string
           submitted_by?: string | null
