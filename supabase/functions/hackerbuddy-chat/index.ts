@@ -291,6 +291,21 @@ const tools = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "remove_team_member",
+      description: "Remove a member from a team. Only team leaders can remove members (not themselves). REQUIRES USER CONFIRMATION.",
+      parameters: {
+        type: "object",
+        properties: {
+          team_query: { type: "string", description: "Team name or team ID (partial ok)" },
+          user_query: { type: "string", description: "Username or userid of the member to remove (partial ok)" },
+        },
+        required: ["team_query", "user_query"],
+      },
+    },
+  },
 ];
 
 // Guardrails - actions that require confirmation
@@ -305,6 +320,7 @@ const CONFIRMATION_REQUIRED_ACTIONS = [
   "submit_hackathon",
   "remove_friend",
   "set_looking_for_teammates",
+  "remove_team_member",
 ];
 
 // Blocked/dangerous actions
@@ -323,33 +339,34 @@ const BLOCKED_PATTERNS = [
 
 // Sensitive data patterns to redact from AI responses
 const SENSITIVE_PATTERNS = [
-  { pattern: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, replace: "[user_id]", desc: "UUID" },
-  { pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, replace: "[email]", desc: "email" },
+  { pattern: /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi, replace: "", desc: "UUID" },
+  { pattern: /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g, replace: "[email hidden]", desc: "email" },
   { pattern: /password[:\s]*["']?[^"'\s]+["']?/gi, replace: "[redacted]", desc: "password" },
   { pattern: /secret[:\s]*["']?[^"'\s]+["']?/gi, replace: "[redacted]", desc: "secret" },
   { pattern: /api[_-]?key[:\s]*["']?[^"'\s]+["']?/gi, replace: "[redacted]", desc: "api_key" },
 ];
 
-// Sanitize response to remove sensitive data (but allow specific contexts)
-function sanitizeResponse(text: string, allowedUserIds: string[] = []): string {
+// Sanitize response to remove ALL UUIDs - never show them to users
+function sanitizeResponse(text: string): string {
   let sanitized = text;
   
   for (const { pattern, replace, desc } of SENSITIVE_PATTERNS) {
     if (desc === "UUID") {
-      // Allow displaying UUIDs that are in the allowed list (like current user's teams)
-      sanitized = sanitized.replace(pattern, (match) => {
-        if (allowedUserIds.includes(match.toLowerCase())) {
-          return match; // Keep if it's an allowed ID
-        }
-        // Don't expose raw UUIDs to users - they should see usernames instead
-        return "[hidden]";
-      });
+      // Remove ALL UUIDs - they should never be shown to users
+      // Also clean up surrounding artifacts like backticks, parentheses
+      sanitized = sanitized.replace(new RegExp(`\\(\`?${pattern.source}\`?\\)`, 'gi'), '');
+      sanitized = sanitized.replace(new RegExp(`\`${pattern.source}\``, 'gi'), '');
+      sanitized = sanitized.replace(pattern, replace);
     } else {
       sanitized = sanitized.replace(pattern, replace);
     }
   }
   
-  return sanitized;
+  // Clean up double spaces and orphaned punctuation
+  sanitized = sanitized.replace(/\s{2,}/g, ' ');
+  sanitized = sanitized.replace(/\(\s*\)/g, '');
+  
+  return sanitized.trim();
 }
 
 // Record interaction for learning feedback
@@ -1325,6 +1342,86 @@ async function executeToolCall(
       };
     }
 
+    case "remove_team_member": {
+      // Resolve the team (must be leader)
+      const teamRes = await resolveTeam(args.team_query, false, true);
+      if (teamRes.type === "error") return { result: { error: teamRes.error } };
+      if (teamRes.type === "none") return { result: { error: "Team not found or you don't have permission to remove members" } };
+      if (teamRes.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple teams. Which team do you want to remove a member from?",
+            matches: teamRes.matches.map((t: any) => ({ name: t.name })),
+          },
+        };
+      }
+
+      const team = teamRes.match;
+
+      // Resolve the user to remove
+      const who = await resolveUser(args.user_query);
+      if (who.type === "error") return { result: { error: who.error } };
+      if (who.type === "none") return { result: { error: "User not found" } };
+      if (who.type === "many") {
+        return {
+          result: {
+            needs_selection: true,
+            message: "I found multiple users. Which member do you want to remove?",
+            matches: who.matches.map((u: any) => ({ username: u.username, userid: u.userid })),
+          },
+        };
+      }
+
+      const target = who.match;
+
+      // Can't remove yourself
+      if (target.user_id === userId) {
+        return { result: { error: "You cannot remove yourself. Use 'leave team' instead." } };
+      }
+
+      // Check if target is actually a member of the team
+      const { data: membership } = await supabase
+        .from("team_members")
+        .select("id, is_leader, role")
+        .eq("team_id", team.id)
+        .eq("user_id", target.user_id)
+        .maybeSingle();
+
+      if (!membership) {
+        return { result: { error: `${target.username} (@${target.userid}) is not a member of team "${team.name}"` } };
+      }
+
+      // Can't remove another leader
+      if (membership.is_leader || membership.role === "leader") {
+        return { result: { error: `Cannot remove ${target.username} - they are also a team leader` } };
+      }
+
+      if (!pendingConfirmation) {
+        return {
+          result: null,
+          needsConfirmation: true,
+          confirmationMessage: `I'll remove ${target.username} (@${target.userid}) from team "${team.name}". Should I proceed?`,
+        };
+      }
+
+      // Remove the member
+      const { error } = await supabase
+        .from("team_members")
+        .delete()
+        .eq("id", membership.id);
+
+      if (error) return { result: { error: error.message } };
+
+      return {
+        result: {
+          success: true,
+          message: `${target.username} (@${target.userid}) has been removed from team "${team.name}"`,
+          action_type: "remove_team_member",
+        },
+      };
+    }
+
     default:
       return { result: { error: "Unknown action" } };
   }
@@ -1499,11 +1596,26 @@ Available capabilities:
 - Get official hackathon links from the database  
 - View current hackathon participations
 - Create teams, leave teams, delete teams
+- Remove members from a team (team leaders only)
 - Accept/send friend requests and team invitations
 - Remove friends from friend list
 - Set team "looking for teammates" status (with visibility: anyone or friends_only)
 - Search users by username/userid
-- Web search for external information`;
+- SUBMIT NEW HACKATHONS for admin approval (use submit_hackathon tool)
+- Web search for external information
+
+HACKATHON SUBMISSION RULES:
+When a user wants to ADD/SUBMIT a new hackathon:
+1. DO NOT say you cannot add hackathons - you CAN submit them for admin approval
+2. Ask the user for the REQUIRED information one by one if not provided:
+   - Name of the hackathon
+   - Start date (when does it begin?)
+   - End date (when does it end?)
+   - Location (city name or "Online")
+   - Region (North America, Europe, Asia, Global, etc.)
+3. Optional info to ask: description, website URL, organizer name
+4. Once you have the required info, use submit_hackathon tool to submit for approval
+5. Tell the user their submission will be reviewed by an admin`;
 
     if (existingSummary?.summary) {
       systemPrompt += `\n\nPrevious conversation summary:\n${existingSummary.summary}`;
@@ -1559,7 +1671,7 @@ Available capabilities:
 
       return new Response(
         JSON.stringify({
-          response: sanitizeResponse(responseText, [user.id]),
+          response: sanitizeResponse(responseText),
           toolResults: [result.result],
           actionCompleted: result.result?.action_type || confirmedAction.name,
         }),
