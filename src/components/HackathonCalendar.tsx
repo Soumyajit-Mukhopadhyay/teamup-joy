@@ -2,7 +2,7 @@ import { useState, useMemo } from 'react';
 import { ChevronLeft, ChevronRight, CalendarDays, Calendar, MapPin, ExternalLink, CalendarPlus, Share2, Globe, Clock } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Hackathon } from '@/data/hackathons';
+import { Hackathon } from '@/hooks/useHackathons';
 import { 
   format, 
   startOfMonth, 

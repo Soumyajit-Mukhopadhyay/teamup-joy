@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import Header from '@/components/Header';
 import { Button } from '@/components/ui/button';
@@ -7,7 +7,6 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
 import { User, Users, Calendar, MessageCircle, Clock, Search as SearchIcon, X } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { hackathons } from '@/data/hackathons';
 import { format, parseISO, isAfter } from 'date-fns';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import {
@@ -28,6 +27,7 @@ interface Team {
   created_by: string;
   created_at: string;
   member_count?: number;
+  hackathon_name?: string;
 }
 
 interface Participation {
@@ -37,15 +37,72 @@ interface Participation {
   created_at: string;
 }
 
+interface HackathonInfo {
+  slug: string;
+  name: string;
+  location: string;
+  endDate: string;
+}
+
 const Profile = () => {
   const navigate = useNavigate();
   const { user, profile } = useAuth();
   const [teams, setTeams] = useState<Team[]>([]);
   const [participations, setParticipations] = useState<Participation[]>([]);
+  const [hackathonMap, setHackathonMap] = useState<Record<string, HackathonInfo>>({});
   const [loading, setLoading] = useState(true);
   const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
   const [selectedParticipation, setSelectedParticipation] = useState<Participation | null>(null);
   const [deleting, setDeleting] = useState(false);
+
+  // Fetch hackathon info for a list of hackathon IDs
+  const fetchHackathonInfo = useCallback(async (hackathonIds: string[]) => {
+    if (hackathonIds.length === 0) return {};
+
+    const uniqueIds = [...new Set(hackathonIds)];
+    const infoMap: Record<string, HackathonInfo> = {};
+
+    // Try to fetch by slug first
+    const { data: bySlug } = await supabase
+      .from('hackathons')
+      .select('id, slug, name, location, end_date')
+      .in('slug', uniqueIds);
+
+    if (bySlug) {
+      bySlug.forEach(h => {
+        infoMap[h.slug] = {
+          slug: h.slug,
+          name: h.name,
+          location: h.location,
+          endDate: h.end_date,
+        };
+      });
+    }
+
+    // For any not found by slug, try by id
+    const foundSlugs = new Set(Object.keys(infoMap));
+    const notFoundIds = uniqueIds.filter(id => !foundSlugs.has(id));
+
+    if (notFoundIds.length > 0) {
+      const { data: byId } = await supabase
+        .from('hackathons')
+        .select('id, slug, name, location, end_date')
+        .in('id', notFoundIds);
+
+      if (byId) {
+        byId.forEach(h => {
+          infoMap[h.id] = {
+            slug: h.slug || h.id,
+            name: h.name,
+            location: h.location,
+            endDate: h.end_date,
+          };
+        });
+      }
+    }
+
+    return infoMap;
+  }, []);
 
   useEffect(() => {
     if (!user) {
@@ -58,30 +115,35 @@ const Profile = () => {
   const fetchData = async () => {
     if (!user) return;
 
+    const hackathonIds: string[] = [];
+
     // Fetch teams
     const { data: memberData } = await supabase
       .from('team_members')
       .select('team_id')
       .eq('user_id', user.id);
 
+    let teamsData: Team[] = [];
     if (memberData && memberData.length > 0) {
       const teamIds = memberData.map(m => m.team_id);
-      const { data: teamsData } = await supabase
+      const { data: fetchedTeams } = await supabase
         .from('teams')
         .select('*')
         .in('id', teamIds)
         .order('created_at', { ascending: false });
 
-      const teamsWithCounts = await Promise.all(
-        (teamsData || []).map(async (team) => {
-          const { count } = await supabase
-            .from('team_members')
-            .select('*', { count: 'exact', head: true })
-            .eq('team_id', team.id);
-          return { ...team, member_count: count || 0 };
-        })
-      );
-      setTeams(teamsWithCounts);
+      if (fetchedTeams) {
+        teamsData = await Promise.all(
+          fetchedTeams.map(async (team) => {
+            const { count } = await supabase
+              .from('team_members')
+              .select('*', { count: 'exact', head: true })
+              .eq('team_id', team.id);
+            hackathonIds.push(team.hackathon_id);
+            return { ...team, member_count: count || 0 };
+          })
+        );
+      }
     }
 
     // Fetch participations
@@ -91,23 +153,37 @@ const Profile = () => {
       .eq('user_id', user.id)
       .order('created_at', { ascending: false });
 
+    if (participationData) {
+      participationData.forEach(p => hackathonIds.push(p.hackathon_id));
+    }
+
+    // Fetch hackathon info
+    const infoMap = await fetchHackathonInfo(hackathonIds);
+    setHackathonMap(infoMap);
+
+    // Add hackathon names to teams
+    const teamsWithNames = teamsData.map(team => ({
+      ...team,
+      hackathon_name: infoMap[team.hackathon_id]?.name || team.hackathon_id,
+    }));
+
+    setTeams(teamsWithNames);
     setParticipations(participationData || []);
     setLoading(false);
   };
 
   const getHackathonName = (hackathonId: string) => {
-    const hackathon = hackathons.find(h => h.id === hackathonId);
-    return hackathon?.name || 'Unknown Hackathon';
+    return hackathonMap[hackathonId]?.name || hackathonId;
   };
 
-  const getHackathon = (hackathonId: string) => {
-    return hackathons.find(h => h.id === hackathonId);
+  const getHackathonInfo = (hackathonId: string) => {
+    return hackathonMap[hackathonId];
   };
 
   const isHackathonOngoing = (hackathonId: string) => {
-    const hackathon = getHackathon(hackathonId);
-    if (!hackathon) return false;
-    const endDate = parseISO(hackathon.endDate);
+    const info = getHackathonInfo(hackathonId);
+    if (!info) return false;
+    const endDate = parseISO(info.endDate);
     return isAfter(endDate, new Date());
   };
 
@@ -211,7 +287,7 @@ const Profile = () => {
                     <div className="flex items-start justify-between mb-4">
                       <div>
                         <h3 className="text-lg font-semibold">{team.name}</h3>
-                        <p className="text-sm text-muted-foreground">{getHackathonName(team.hackathon_id)}</p>
+                        <p className="text-sm text-muted-foreground">{team.hackathon_name}</p>
                       </div>
                       <span className="flex items-center gap-1 text-sm text-muted-foreground">
                         <Users className="h-4 w-4" />
@@ -246,7 +322,7 @@ const Profile = () => {
             ) : (
               <div className="grid gap-4">
                 {currentParticipations.map((p) => {
-                  const hackathon = getHackathon(p.hackathon_id);
+                  const info = getHackathonInfo(p.hackathon_id);
                   const ongoing = isHackathonOngoing(p.hackathon_id);
                   const hasTeams = hasTeamsForHackathon(p.hackathon_id);
                   
@@ -266,11 +342,11 @@ const Profile = () => {
 
                       <div 
                         className="flex items-center justify-between cursor-pointer pr-6" 
-                        onClick={() => navigate(`/hackathon/${p.hackathon_id}`)}
+                        onClick={() => navigate(`/hackathon/${info?.slug || p.hackathon_id}`)}
                       >
                         <div>
-                          <h3 className="font-semibold">{hackathon?.name || p.hackathon_id}</h3>
-                          <p className="text-sm text-muted-foreground">{hackathon?.location}</p>
+                          <h3 className="font-semibold">{info?.name || p.hackathon_id}</h3>
+                          <p className="text-sm text-muted-foreground">{info?.location}</p>
                         </div>
                         {p.status === 'looking_for_team' && (
                           <span className="text-xs bg-primary/20 text-primary px-2 py-1 rounded-full flex items-center gap-1">
@@ -295,7 +371,7 @@ const Profile = () => {
             ) : (
               <div className="grid gap-4">
                 {pastParticipations.map((p) => {
-                  const hackathon = getHackathon(p.hackathon_id);
+                  const info = getHackathonInfo(p.hackathon_id);
                   return (
                     <div key={p.id} className="glass-card p-5 card-hover relative">
                       {/* Delete button */}
@@ -310,8 +386,8 @@ const Profile = () => {
                         <X className="h-4 w-4" />
                       </button>
                       <div className="pr-6">
-                        <h3 className="font-semibold">{hackathon?.name || p.hackathon_id}</h3>
-                        <p className="text-sm text-muted-foreground">{hackathon?.location}</p>
+                        <h3 className="font-semibold">{info?.name || p.hackathon_id}</h3>
+                        <p className="text-sm text-muted-foreground">{info?.location}</p>
                       </div>
                     </div>
                   );

@@ -1,23 +1,24 @@
 import { useState } from 'react';
-import { Calendar, MapPin, ExternalLink, Share2, CalendarPlus, Globe, Clock, Pencil } from 'lucide-react';
+import { Calendar, MapPin, ExternalLink, Share2, CalendarPlus, Globe, Clock, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Hackathon } from '@/data/hackathons';
+import { Hackathon } from '@/hooks/useHackathons';
 import { format, parseISO } from 'date-fns';
 import { toast } from 'sonner';
 import EditHackathonModal from './EditHackathonModal';
+import DeleteHackathonDialog from './DeleteHackathonDialog';
 
 interface HackathonCardProps {
   hackathon: Hackathon;
   delay?: number;
   onClick?: () => void;
   onUpdated?: () => void;
-  isDbHackathon?: boolean;
   isAdmin?: boolean;
 }
 
-const HackathonCard = ({ hackathon, delay = 0, onClick, onUpdated, isDbHackathon = false, isAdmin = false }: HackathonCardProps) => {
+const HackathonCard = ({ hackathon, delay = 0, onClick, onUpdated, isAdmin = false }: HackathonCardProps) => {
   const [showEditModal, setShowEditModal] = useState(false);
+  const [showDeleteDialog, setShowDeleteDialog] = useState(false);
 
   const formatDate = (dateStr: string) => {
     return format(parseISO(dateStr), 'MMM d, yyyy');
@@ -26,6 +27,11 @@ const HackathonCard = ({ hackathon, delay = 0, onClick, onUpdated, isDbHackathon
   const handleEdit = (e: React.MouseEvent) => {
     e.stopPropagation();
     setShowEditModal(true);
+  };
+
+  const handleDelete = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setShowDeleteDialog(true);
   };
 
   const isLinkUpdatingSoon = hackathon.linkStatus === 'updating-soon' || !hackathon.url;
@@ -163,15 +169,26 @@ const HackathonCard = ({ hackathon, delay = 0, onClick, onUpdated, isDbHackathon
           >
             <Share2 className="h-4 w-4" />
           </Button>
-          {isAdmin && isDbHackathon && (
-            <Button 
-              variant="outline" 
-              size="icon"
-              onClick={handleEdit}
-              title="Edit Hackathon"
-            >
-              <Pencil className="h-4 w-4" />
-            </Button>
+          {isAdmin && (
+            <>
+              <Button 
+                variant="outline" 
+                size="icon"
+                onClick={handleEdit}
+                title="Edit Hackathon"
+              >
+                <Pencil className="h-4 w-4" />
+              </Button>
+              <Button 
+                variant="outline" 
+                size="icon"
+                onClick={handleDelete}
+                title="Delete Hackathon"
+                className="text-destructive hover:text-destructive"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </>
           )}
         </div>
       </div>
@@ -182,6 +199,16 @@ const HackathonCard = ({ hackathon, delay = 0, onClick, onUpdated, isDbHackathon
           isOpen={showEditModal}
           onClose={() => setShowEditModal(false)}
           onUpdated={() => onUpdated?.()}
+        />
+      )}
+
+      {showDeleteDialog && (
+        <DeleteHackathonDialog
+          hackathonId={hackathon.id}
+          hackathonName={hackathon.name}
+          isOpen={showDeleteDialog}
+          onClose={() => setShowDeleteDialog(false)}
+          onDeleted={() => onUpdated?.()}
         />
       )}
     </>
