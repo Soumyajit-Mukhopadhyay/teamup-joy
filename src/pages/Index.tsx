@@ -15,36 +15,39 @@ const Index = () => {
   const [selectedRegion, setSelectedRegion] = useState('All Regions');
   const [selectedTopic, setSelectedTopic] = useState('All Topics');
   const [dbHackathons, setDbHackathons] = useState<Hackathon[]>([]);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   // Fetch approved hackathons from database
+  const fetchApprovedHackathons = async () => {
+    const { data, error } = await supabase
+      .from('hackathons')
+      .select('*')
+      .eq('status', 'approved')
+      .order('start_date', { ascending: true });
+
+    if (!error && data) {
+      const formatted: Hackathon[] = data.map(h => ({
+        id: h.id,
+        name: h.name,
+        description: h.description || '',
+        startDate: h.start_date,
+        endDate: h.end_date,
+        region: h.region as 'India' | 'Global',
+        location: h.location,
+        url: h.url || '#',
+        organizer: h.organizer || 'Community',
+        tags: h.tags || [],
+        isGlobal: h.is_global,
+      }));
+      setDbHackathons(formatted);
+    }
+  };
+
   useEffect(() => {
-    const fetchApprovedHackathons = async () => {
-      const { data, error } = await supabase
-        .from('hackathons')
-        .select('*')
-        .eq('status', 'approved')
-        .order('start_date', { ascending: true });
-
-      if (!error && data) {
-        const formatted: Hackathon[] = data.map(h => ({
-          id: h.id,
-          name: h.name,
-          description: h.description || '',
-          startDate: h.start_date,
-          endDate: h.end_date,
-          region: h.region as 'India' | 'Global',
-          location: h.location,
-          url: h.url || '#',
-          organizer: h.organizer || 'Community',
-          tags: h.tags || [],
-          isGlobal: h.is_global,
-        }));
-        setDbHackathons(formatted);
-      }
-    };
-
     fetchApprovedHackathons();
-  }, []);
+  }, [refreshKey]);
+
+  const dbHackathonIds = useMemo(() => new Set(dbHackathons.map(h => h.id)), [dbHackathons]);
 
   const allHackathons = useMemo(() => {
     return [...initialHackathons, ...dbHackathons];
@@ -85,6 +88,8 @@ const Index = () => {
                 hackathon={hackathon} 
                 delay={idx * 50}
                 onClick={() => navigate(`/hackathon/${hackathon.id}`)}
+                isDbHackathon={dbHackathonIds.has(hackathon.id)}
+                onUpdated={() => setRefreshKey(k => k + 1)}
               />
             ))}
           </div>
