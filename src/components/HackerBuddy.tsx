@@ -54,7 +54,8 @@ const HackerBuddy = () => {
   const [input, setInput] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [pendingAction, setPendingAction] = useState<PendingAction | null>(null);
-  const [remainingTasks, setRemainingTasks] = useState<PendingAction[]>([]);
+  const [taskQueue, setTaskQueue] = useState<PendingAction[]>([]);
+  const [isExecutingQueue, setIsExecutingQueue] = useState(false);
   const scrollAreaRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -78,7 +79,6 @@ const HackerBuddy = () => {
   // Scroll to bottom on new messages or when chat opens
   useEffect(() => {
     if (isOpen) {
-      // Small delay to ensure DOM is updated
       setTimeout(scrollToBottom, 100);
     }
   }, [messages, isOpen, scrollToBottom]);
@@ -158,10 +158,140 @@ const HackerBuddy = () => {
 
     setMessages([]);
     setPendingAction(null);
+    setTaskQueue([]);
+    setIsExecutingQueue(false);
     toast.success('Chat cleared');
   };
 
-  const sendMessage = async (e?: React.FormEvent, confirmAction?: boolean, tasksToRun?: PendingAction[]) => {
+  // Execute a single task and return the result
+  const executeTask = async (action: PendingAction, remainingTasks: PendingAction[] = []): Promise<{
+    success: boolean;
+    response: string;
+    nextPendingAction?: PendingAction;
+    nextRemainingTasks?: PendingAction[];
+    actionCompleted?: string;
+  }> => {
+    const pathname = window.location.pathname || '';
+    const hackathonMatch = pathname.match(/^\/hackathon\/([^/]+)$/);
+    const currentHackathonId = hackathonMatch?.[1];
+
+    const response = await fetch(
+      `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/hackerbuddy-chat`,
+      {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+          apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
+        },
+        body: JSON.stringify({
+          message: 'Yes, proceed',
+          conversationHistory: messages.slice(-20).map((m) => ({
+            role: m.role,
+            content: m.content,
+          })),
+          pendingConfirmation: true,
+          confirmedAction: action,
+          remainingTasks,
+          currentHackathonId,
+          stream: false,
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    if (data.error) {
+      return { success: false, response: `❌ ${data.error}` };
+    }
+
+    return {
+      success: true,
+      response: data.response,
+      nextPendingAction: data.pendingConfirmation,
+      nextRemainingTasks: data.remainingTasks,
+      actionCompleted: data.actionCompleted,
+    };
+  };
+
+  // Process all tasks in queue sequentially (after initial confirmation)
+  const processTaskQueue = async (initialAction: PendingAction, queue: PendingAction[]) => {
+    setIsExecutingQueue(true);
+    setIsLoading(true);
+    
+    const results: { action: string; success: boolean; message: string }[] = [];
+    let currentAction: PendingAction | undefined = initialAction;
+    let remainingQueue = [...queue];
+
+    while (currentAction) {
+      try {
+        const result = await executeTask(currentAction, remainingQueue);
+        
+        results.push({
+          action: currentAction.name.replace(/_/g, ' '),
+          success: result.success,
+          message: result.response,
+        });
+
+        // Add response to messages
+        const assistantMessage: Message = {
+          id: `temp-${Date.now()}-${Math.random()}`,
+          role: 'assistant',
+          content: result.response,
+          timestamp: new Date(),
+        };
+        setMessages((prev) => [...prev, assistantMessage]);
+        await saveMessage('assistant', result.response);
+
+        // Emit event for UI refresh
+        if (result.actionCompleted) {
+          emitAIActionEvent(result.actionCompleted);
+        }
+
+        // Check if next action needs confirmation (shouldn't happen in auto-queue mode)
+        if (result.nextPendingAction) {
+          // If we have more tasks but this one needs confirmation, just continue
+          // The confirmation was already given for the batch
+          currentAction = result.nextPendingAction;
+          remainingQueue = result.nextRemainingTasks || [];
+        } else if (remainingQueue.length > 0) {
+          // Move to next task in queue
+          currentAction = remainingQueue[0];
+          remainingQueue = remainingQueue.slice(1);
+          
+          // Small delay between tasks
+          await new Promise(resolve => setTimeout(resolve, 300));
+        } else {
+          // All done
+          currentAction = undefined;
+        }
+      } catch (error) {
+        console.error('Task execution error:', error);
+        results.push({
+          action: currentAction.name.replace(/_/g, ' '),
+          success: false,
+          message: `Error: ${error instanceof Error ? error.message : 'Unknown error'}`,
+        });
+        
+        // Continue to next task on error
+        if (remainingQueue.length > 0) {
+          currentAction = remainingQueue[0];
+          remainingQueue = remainingQueue.slice(1);
+        } else {
+          currentAction = undefined;
+        }
+      }
+    }
+
+    setIsExecutingQueue(false);
+    setIsLoading(false);
+    setPendingAction(null);
+    setTaskQueue([]);
+    
+    setTimeout(scrollToBottom, 100);
+  };
+
+  const sendMessage = async (e?: React.FormEvent) => {
     e?.preventDefault();
 
     if (!user) {
@@ -169,8 +299,8 @@ const HackerBuddy = () => {
       return;
     }
 
-    const messageText = confirmAction ? (pendingAction ? 'Yes, proceed' : '') : input.trim();
-    if (!messageText && !confirmAction) return;
+    const messageText = input.trim();
+    if (!messageText) return;
 
     // Add user message to UI
     const userMessage: Message = {
@@ -180,15 +310,11 @@ const HackerBuddy = () => {
       timestamp: new Date(),
     };
 
-    if (!confirmAction) {
-      setMessages((prev) => [...prev, userMessage]);
-      setInput('');
-      await saveMessage('user', messageText);
-    }
+    setMessages((prev) => [...prev, userMessage]);
+    setInput('');
+    await saveMessage('user', messageText);
 
     setIsLoading(true);
-    
-    // Scroll to show the user message and loading indicator
     setTimeout(scrollToBottom, 50);
 
     const pathname = window.location.pathname || '';
@@ -196,7 +322,6 @@ const HackerBuddy = () => {
     const currentHackathonId = hackathonMatch?.[1];
 
     try {
-      // Request streaming
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/hackerbuddy-chat`,
         {
@@ -212,9 +337,7 @@ const HackerBuddy = () => {
               role: m.role,
               content: m.content,
             })),
-            pendingConfirmation: confirmAction && pendingAction ? true : false,
-            confirmedAction: confirmAction ? pendingAction : undefined,
-            remainingTasks: tasksToRun || remainingTasks,
+            pendingConfirmation: false,
             currentHackathonId,
             stream: true,
           }),
@@ -268,11 +391,9 @@ const HackerBuddy = () => {
                     m.id === assistantId ? { ...m, content: fullContent } : m
                   )
                 );
-                // Scroll as content streams in
                 scrollToBottom();
               }
             } catch {
-              // Incomplete JSON, put it back
               textBuffer = line + '\n' + textBuffer;
               break;
             }
@@ -306,7 +427,7 @@ const HackerBuddy = () => {
         }
 
         setPendingAction(null);
-        setRemainingTasks([]);
+        setTaskQueue([]);
         if (fullContent) {
           await saveMessage('assistant', fullContent);
         }
@@ -320,33 +441,16 @@ const HackerBuddy = () => {
 
         if (data.pendingConfirmation) {
           setPendingAction(data.pendingConfirmation);
-          // Store remaining tasks for later execution
-          if (data.remainingTasks && Array.isArray(data.remainingTasks)) {
-            setRemainingTasks(data.remainingTasks);
-          } else {
-            setRemainingTasks([]);
-          }
+          // Store remaining tasks for batch execution
+          setTaskQueue(data.remainingTasks || []);
         } else {
           setPendingAction(null);
-          setRemainingTasks([]);
+          setTaskQueue([]);
         }
 
         // If an action was completed, emit event for UI refresh
         if (data.actionCompleted) {
           emitAIActionEvent(data.actionCompleted);
-          toast.success('Action completed');
-          
-          // If there are remaining tasks, automatically continue to the next one
-          if (remainingTasks.length > 0 && !data.pendingConfirmation) {
-            const nextTask = remainingTasks[0];
-            const newRemainingTasks = remainingTasks.slice(1);
-            setRemainingTasks(newRemainingTasks);
-            
-            // Automatically execute the next task
-            setTimeout(() => {
-              executeNextTask(nextTask, newRemainingTasks);
-            }, 500);
-          }
         }
 
         const responseText: string = data.response || "I'm not sure how to help with that.";
@@ -372,120 +476,20 @@ const HackerBuddy = () => {
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
       setIsLoading(false);
-      // Final scroll after everything is done
-      setTimeout(scrollToBottom, 100);
-    }
-  };
-
-  // Execute remaining tasks after confirmation
-  const executeNextTask = async (task: PendingAction, newRemainingTasks: PendingAction[]) => {
-    setIsLoading(true);
-    
-    const pathname = window.location.pathname || '';
-    const hackathonMatch = pathname.match(/^\/hackathon\/([^/]+)$/);
-    const currentHackathonId = hackathonMatch?.[1];
-    
-    try {
-      const response = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/hackerbuddy-chat`,
-        {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
-            apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
-          },
-          body: JSON.stringify({
-            message: 'Continue with next task',
-            conversationHistory: messages.slice(-20).map((m) => ({
-              role: m.role,
-              content: m.content,
-            })),
-            pendingConfirmation: true,
-            confirmedAction: task,
-            remainingTasks: newRemainingTasks,
-            currentHackathonId,
-            stream: false,
-          }),
-        }
-      );
-
-      const data = await response.json();
-      
-      if (data.error) {
-        throw new Error(data.error);
-      }
-
-      // If there's another pending confirmation
-      if (data.pendingConfirmation) {
-        setPendingAction(data.pendingConfirmation);
-        if (data.remainingTasks) {
-          setRemainingTasks(data.remainingTasks);
-        }
-      } else {
-        setPendingAction(null);
-        setRemainingTasks([]);
-      }
-
-      if (data.actionCompleted) {
-        emitAIActionEvent(data.actionCompleted);
-      }
-
-      const responseText = data.response || "Task completed.";
-      const assistantMessage: Message = {
-        id: `temp-${Date.now()}-response`,
-        role: 'assistant',
-        content: responseText,
-        timestamp: new Date(),
-        pendingConfirmation: data.pendingConfirmation,
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
-      await saveMessage('assistant', responseText);
-
-      // Continue to next task if there are more and no confirmation needed
-      if (newRemainingTasks.length > 0 && !data.pendingConfirmation) {
-        const nextTask = newRemainingTasks[0];
-        const newerRemainingTasks = newRemainingTasks.slice(1);
-        setRemainingTasks(newerRemainingTasks);
-        setTimeout(() => {
-          executeNextTask(nextTask, newerRemainingTasks);
-        }, 500);
-      }
-    } catch (error) {
-      console.error('Error executing next task:', error);
-      const errorMessage: Message = {
-        id: `temp-${Date.now()}-error`,
-        role: 'assistant',
-        content: "I encountered an error with the next task. Please try again.",
-        timestamp: new Date(),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
-      setRemainingTasks([]);
-    } finally {
-      setIsLoading(false);
       setTimeout(scrollToBottom, 100);
     }
   };
 
   const handleConfirm = async () => {
-    // Execute the pending action
-    await sendMessage(undefined, true);
+    if (!pendingAction || isExecutingQueue) return;
     
-    // After confirmation, if there are remaining tasks, continue automatically
-    if (remainingTasks.length > 0) {
-      const nextTask = remainingTasks[0];
-      const newRemainingTasks = remainingTasks.slice(1);
-      
-      // Wait a bit then execute the next task
-      setTimeout(() => {
-        executeNextTask(nextTask, newRemainingTasks);
-      }, 1000);
-    }
+    // Process the initial action and all queued tasks
+    await processTaskQueue(pendingAction, taskQueue);
   };
 
   const handleReject = () => {
     setPendingAction(null);
-    setRemainingTasks([]);
+    setTaskQueue([]);
     const rejectMessage: Message = {
       id: `temp-${Date.now()}-reject`,
       role: 'assistant',
@@ -591,11 +595,11 @@ const HackerBuddy = () => {
           </ScrollArea>
 
           {/* Confirmation buttons */}
-          {pendingAction && !isLoading && (
+          {pendingAction && !isLoading && !isExecutingQueue && (
             <div className="p-3 border-t border-border bg-muted/30 flex gap-2">
               <Button onClick={handleConfirm} size="sm" className="flex-1">
                 <Check className="h-4 w-4 mr-1" />
-                Yes, proceed
+                Yes, proceed{taskQueue.length > 0 ? ` (${taskQueue.length + 1} tasks)` : ''}
               </Button>
               <Button onClick={handleReject} variant="outline" size="sm" className="flex-1">
                 <XCircle className="h-4 w-4 mr-1" />
@@ -612,10 +616,10 @@ const HackerBuddy = () => {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 placeholder="Ask me anything..."
-                disabled={isLoading || !!pendingAction}
+                disabled={isLoading || !!pendingAction || isExecutingQueue}
                 className="flex-1"
               />
-              <Button type="submit" size="icon" disabled={isLoading || !input.trim() || !!pendingAction}>
+              <Button type="submit" size="icon" disabled={isLoading || !input.trim() || !!pendingAction || isExecutingQueue}>
                 <Send className="h-4 w-4" />
               </Button>
             </div>
