@@ -219,6 +219,37 @@ const LookingForTeammates = () => {
       return;
     }
     fetchTeams();
+
+    // Subscribe to realtime updates for teams and team_members
+    const channel = supabase
+      .channel('looking-for-teammates-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'teams',
+        },
+        () => {
+          fetchTeams();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'team_members',
+        },
+        () => {
+          fetchTeams();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user, authLoading, fetchTeams]);
 
   // Filter teams based on search query (hackathon name, team name, or member name)

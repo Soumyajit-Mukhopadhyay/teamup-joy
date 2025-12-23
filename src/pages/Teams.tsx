@@ -261,6 +261,12 @@ const Teams = () => {
           .update({ is_leader: true, role: 'leader' })
           .eq('id', newLeader.id);
 
+        // Update the created_by to the new leader
+        await supabase
+          .from('teams')
+          .update({ created_by: newLeader.user_id })
+          .eq('id', selectedTeam.id);
+
         toast.info(`Leadership transferred to another team member`);
       }
 
@@ -272,6 +278,15 @@ const Teams = () => {
         .eq('user_id', user.id);
 
       if (error) throw error;
+
+      // If this was the last member, delete the team
+      if (otherMembers.length === 0) {
+        await supabase
+          .from('teams')
+          .delete()
+          .eq('id', selectedTeam.id);
+        toast.info('Team deleted as you were the last member');
+      }
 
       // Also remove hackathon participation if no more teams in that hackathon
       const remainingTeams = teams.filter(

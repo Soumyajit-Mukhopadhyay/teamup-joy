@@ -219,6 +219,17 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
           fetchTeamsLookingForMembers();
         }
       )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'team_members',
+        },
+        () => {
+          fetchTeamsLookingForMembers();
+        }
+      )
       .subscribe();
 
     return () => {

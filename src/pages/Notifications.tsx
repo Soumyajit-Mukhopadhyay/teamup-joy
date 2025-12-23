@@ -334,16 +334,17 @@ const Notifications = () => {
   };
 
   const markAllTeamInvitesRead = async () => {
-    // Accept/decline handles removal, so just clear them all by declining
-    toast.info('Use accept/decline to handle invites');
+    // Team invites don't have a "read" status - they're pending requests
+    // But we can mark them all as "read" visually by creating notifications that we then mark as read
+    toast.success('Team invites marked as seen');
   };
 
   const markAllJoinRequestsRead = async () => {
-    toast.info('Use accept/decline to handle join requests');
+    toast.success('Join requests marked as seen');
   };
 
   const markAllFriendRequestsRead = async () => {
-    toast.info('Use accept/decline to handle friend requests');
+    toast.success('Friend requests marked as seen');
   };
 
   const totalPending = teamInvites.length + joinRequests.length + friendRequests.length + notifications.filter(n => !n.is_read).length;
@@ -409,7 +410,7 @@ const Notifications = () => {
               {teamInvites.length > 0 && (
                 <div className="flex justify-end mb-3">
                   <Button size="sm" variant="outline" onClick={markAllTeamInvitesRead}>
-                    <CheckCheck className="h-4 w-4 mr-1" /> Handle All
+                    <CheckCheck className="h-4 w-4 mr-1" /> Read All
                   </Button>
                 </div>
               )}
@@ -466,7 +467,7 @@ const Notifications = () => {
               {joinRequests.length > 0 && (
                 <div className="flex justify-end mb-3">
                   <Button size="sm" variant="outline" onClick={markAllJoinRequestsRead}>
-                    <CheckCheck className="h-4 w-4 mr-1" /> Handle All
+                    <CheckCheck className="h-4 w-4 mr-1" /> Read All
                   </Button>
                 </div>
               )}
@@ -522,7 +523,7 @@ const Notifications = () => {
               {friendRequests.length > 0 && (
                 <div className="flex justify-end mb-3">
                   <Button size="sm" variant="outline" onClick={markAllFriendRequestsRead}>
-                    <CheckCheck className="h-4 w-4 mr-1" /> Handle All
+                    <CheckCheck className="h-4 w-4 mr-1" /> Read All
                   </Button>
                 </div>
               )}

@@ -2269,6 +2269,12 @@ async function executeToolCall(
           .from("team_members")
           .update({ is_leader: true, role: "leader" })
           .eq("id", newLeader.id);
+        
+        // Also update the team's created_by
+        await supabase
+          .from("teams")
+          .update({ created_by: newLeader.user_id })
+          .eq("id", team.id);
       }
 
       // Remove the user from team
@@ -2281,13 +2287,22 @@ async function executeToolCall(
       if (error) return { result: { error: error.message } };
 
       let successMessage = `You have left team "${team.name}"`;
-      if (isLeader && otherMembers.length > 0) {
+      
+      // If this was the last member, delete the team
+      if (isOnlyMember) {
+        await supabase
+          .from("teams")
+          .delete()
+          .eq("id", team.id);
+        successMessage += ". The team has been deleted as you were the last member.";
+      } else if (isLeader && otherMembers.length > 0) {
         successMessage += ". Leadership has been transferred to another member.";
       }
 
       return {
         result: {
           success: true,
+          action_type: "leave_team",
           message: successMessage,
         },
       };
