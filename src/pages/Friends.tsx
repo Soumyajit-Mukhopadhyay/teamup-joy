@@ -61,6 +61,39 @@ const Friends = () => {
       return;
     }
     fetchData();
+
+    // Subscribe to realtime updates
+    const channel = supabase
+      .channel('friends-realtime')
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'friends',
+        filter: `user_id=eq.${user.id}`,
+      }, () => fetchData())
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'friends',
+        filter: `friend_id=eq.${user.id}`,
+      }, () => fetchData())
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'friend_requests',
+        filter: `to_user_id=eq.${user.id}`,
+      }, () => fetchData())
+      .on('postgres_changes', {
+        event: '*',
+        schema: 'public',
+        table: 'friend_requests',
+        filter: `from_user_id=eq.${user.id}`,
+      }, () => fetchData())
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user, navigate]);
 
   const fetchData = async () => {

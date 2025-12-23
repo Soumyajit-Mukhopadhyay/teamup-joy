@@ -4,4 +4,4 @@ project_id = "efzooflemtdqzgzoyayd"
 verify_jwt = false
 
 [functions.hackerbuddy-chat]
-verify_jwt = false
+verify_jwt = true
