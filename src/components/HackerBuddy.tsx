@@ -264,24 +264,26 @@ const HackerBuddy = () => {
   const clearChat = async () => {
     if (!user) return;
 
-    // SOFT DELETE: Set hidden_at instead of deleting
-    // Use raw update to bypass type checking (hidden_at column added via migration)
+    // SOFT DELETE: Set hidden_at for only non-hidden messages
     const { error } = await supabase
       .from('ai_chat_messages')
       .update({ hidden_at: new Date().toISOString() } as any)
-      .eq('user_id', user.id);
+      .eq('user_id', user.id)
+      .is('hidden_at', null);
 
     if (error) {
+      console.error('Error clearing chat:', error);
       toast.error('Failed to clear chat');
       return;
     }
 
-    // Also clear conversation summary (this can still be deleted as it's just a summary)
+    // Also clear conversation summary
     await supabase
       .from('ai_conversation_summaries')
       .delete()
       .eq('user_id', user.id);
 
+    // Clear local state immediately
     setMessages([]);
     setPendingAction(null);
     setTaskQueue([]);
