@@ -352,8 +352,9 @@ const Notifications = () => {
   return (
     <div className="min-h-screen bg-background">
       <Header />
+      <AppSidebar />
 
-      <main className="container py-8 max-w-2xl">
+      <main className="container py-8 max-w-2xl md:ml-64">
         <div className="flex items-center gap-3 mb-8">
           <div className="h-12 w-12 rounded-lg bg-primary/20 flex items-center justify-center">
             <Bell className="h-6 w-6 text-primary" />
