@@ -1,8 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import Header from '@/components/Header';
-import Footer from '@/components/Footer';
-import AppSidebar from '@/components/AppSidebar';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAuth } from '@/contexts/AuthContext';
@@ -240,6 +238,9 @@ const Friends = () => {
   };
 
   const cancelRequest = async (requestId: string) => {
+    // Immediately update local state for instant feedback
+    setSentRequests(prev => prev.filter(r => r.id !== requestId));
+    
     const { error } = await supabase
       .from('friend_requests')
       .delete()
@@ -247,17 +248,16 @@ const Friends = () => {
 
     if (error) {
       toast.error('Failed to cancel request');
+      // Revert on error
+      fetchData();
     } else {
       toast.success('Request cancelled');
-      fetchData();
     }
   };
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <Header />
-
-      <main className="container py-8 max-w-4xl flex-1">
+    <AuthenticatedLayout>
+      <div className="container py-8 max-w-4xl">
         <div className="flex items-center gap-3 mb-8">
           <div className="h-12 w-12 rounded-lg bg-primary/20 flex items-center justify-center">
             <User className="h-6 w-6 text-primary" />
@@ -439,9 +439,8 @@ const Friends = () => {
             )}
           </TabsContent>
         </Tabs>
-      </main>
-      <Footer />
-    </div>
+      </div>
+    </AuthenticatedLayout>
   );
 };
 
