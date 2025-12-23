@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { supabase } from '@/integrations/supabase/client';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
-import { Users, UserPlus, Globe, UserCheck } from 'lucide-react';
+import { Users, UserPlus, Globe, UserCheck, ChevronRight, Crown } from 'lucide-react';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 
@@ -21,6 +22,12 @@ interface TeamLookingForMembers {
   };
   member_count: number;
   already_requested: boolean;
+  members?: {
+    user_id: string;
+    username: string;
+    userid: string;
+    is_leader: boolean;
+  }[];
 }
 
 interface LookingForTeammatesSectionProps {
@@ -28,6 +35,7 @@ interface LookingForTeammatesSectionProps {
 }
 
 const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectionProps) => {
+  const navigate = useNavigate();
   const { user } = useAuth();
   const [anyoneTeams, setAnyoneTeams] = useState<TeamLookingForMembers[]>([]);
   const [friendsTeams, setFriendsTeams] = useState<TeamLookingForMembers[]>([]);
@@ -97,16 +105,27 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
         .select('user_id, username, userid')
         .in('user_id', leaderIds);
 
-      // Get member counts
+      // Get all members for teams
       const teamIds = visibleTeams.map(t => t.id);
-      const { data: memberships } = await supabase
+      const { data: allMembers } = await supabase
         .from('team_members')
-        .select('team_id')
+        .select('team_id, user_id, is_leader, role')
         .in('team_id', teamIds);
 
+      // Get profiles for all members
+      const allMemberIds = [...new Set((allMembers || []).map(m => m.user_id))];
+      const { data: allProfiles } = await supabase
+        .from('profiles')
+        .select('user_id, username, userid')
+        .in('user_id', allMemberIds);
+
       const memberCounts: Record<string, number> = {};
-      (memberships || []).forEach(m => {
+      const teamMembersMap: Record<string, typeof allMembers> = {};
+      
+      (allMembers || []).forEach(m => {
         memberCounts[m.team_id] = (memberCounts[m.team_id] || 0) + 1;
+        if (!teamMembersMap[m.team_id]) teamMembersMap[m.team_id] = [];
+        teamMembersMap[m.team_id].push(m);
       });
 
       // Check if user already requested to join these teams
@@ -130,15 +149,28 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
 
       const enrichedTeams: TeamLookingForMembers[] = visibleTeams
         .filter(t => !memberTeamIds.has(t.id))
-        .map(team => ({
-          id: team.id,
-          name: team.name,
-          hackathon_id: team.hackathon_id,
-          looking_visibility: team.looking_visibility,
-          leader_profile: profiles?.find(p => p.user_id === team.created_by),
-          member_count: memberCounts[team.id] || 1,
-          already_requested: requestedTeamIds.has(team.id),
-        }));
+        .map(team => {
+          const teamMembers = (teamMembersMap[team.id] || []).map(m => {
+            const profile = allProfiles?.find(p => p.user_id === m.user_id);
+            return {
+              user_id: m.user_id,
+              username: profile?.username || 'Unknown',
+              userid: profile?.userid || '',
+              is_leader: m.is_leader || m.role === 'leader',
+            };
+          }).sort((a, b) => (a.is_leader ? -1 : 1));
+
+          return {
+            id: team.id,
+            name: team.name,
+            hackathon_id: team.hackathon_id,
+            looking_visibility: team.looking_visibility,
+            leader_profile: profiles?.find(p => p.user_id === team.created_by),
+            member_count: memberCounts[team.id] || 1,
+            already_requested: requestedTeamIds.has(team.id),
+            members: teamMembers,
+          };
+        });
 
       // Separate into two lists
       setAnyoneTeams(enrichedTeams.filter(t => t.looking_visibility === 'anyone'));
@@ -211,42 +243,81 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
   const renderTeamCard = (team: TeamLookingForMembers) => (
     <div 
       key={team.id} 
-      className="flex items-center justify-between p-3 bg-secondary/50 rounded-lg"
+      className="p-4 bg-secondary/50 rounded-lg hover:bg-secondary/70 transition-colors"
     >
-      <div className="flex items-center gap-3 min-w-0 flex-1">
-        <Avatar className="h-10 w-10 shrink-0">
-          <AvatarFallback className="bg-primary/20 text-primary">
-            {team.name[0]?.toUpperCase()}
-          </AvatarFallback>
-        </Avatar>
-        <div className="min-w-0">
-          <p className="font-medium truncate">{team.name}</p>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span>by @{team.leader_profile?.userid}</span>
-            <span>•</span>
-            <span>{team.member_count} member{team.member_count !== 1 ? 's' : ''}</span>
+      <div className="flex items-start justify-between mb-3">
+        <div className="flex items-center gap-3 min-w-0 flex-1">
+          <Avatar className="h-10 w-10 shrink-0">
+            <AvatarFallback className="bg-primary/20 text-primary">
+              {team.name[0]?.toUpperCase()}
+            </AvatarFallback>
+          </Avatar>
+          <div className="min-w-0">
+            <p className="font-medium truncate">{team.name}</p>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span>by @{team.leader_profile?.userid}</span>
+              <span>•</span>
+              <span>{team.member_count} member{team.member_count !== 1 ? 's' : ''}</span>
+            </div>
           </div>
+        </div>
+
+        <div className="flex items-center gap-2 shrink-0">
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={() => navigate(`/team/${team.id}/details`)}
+            className="gap-1"
+          >
+            View <ChevronRight className="h-3 w-3" />
+          </Button>
+          <Button
+            size="sm"
+            variant={team.already_requested ? 'outline' : 'default'}
+            disabled={team.already_requested || requestingTeamId === team.id}
+            onClick={() => requestToJoin(team)}
+          >
+            {team.already_requested ? (
+              'Requested'
+            ) : requestingTeamId === team.id ? (
+              'Sending...'
+            ) : (
+              <>
+                <UserPlus className="h-4 w-4 mr-1" />
+                Join
+              </>
+            )}
+          </Button>
         </div>
       </div>
 
-      <Button
-        size="sm"
-        variant={team.already_requested ? 'outline' : 'default'}
-        disabled={team.already_requested || requestingTeamId === team.id}
-        onClick={() => requestToJoin(team)}
-        className="shrink-0 ml-2"
-      >
-        {team.already_requested ? (
-          'Requested'
-        ) : requestingTeamId === team.id ? (
-          'Sending...'
-        ) : (
-          <>
-            <UserPlus className="h-4 w-4 mr-1" />
-            Join
-          </>
-        )}
-      </Button>
+      {/* Members preview */}
+      {team.members && team.members.length > 0 && (
+        <div className="flex items-center gap-2 mt-2 pt-2 border-t border-border/50">
+          <div className="flex -space-x-2">
+            {team.members.slice(0, 4).map((member) => (
+              <Avatar
+                key={member.user_id}
+                className="h-6 w-6 border-2 border-background cursor-pointer hover:scale-110 transition-transform"
+                onClick={() => navigate(`/user/${member.userid}`)}
+              >
+                <AvatarFallback className="text-xs bg-muted text-muted-foreground">
+                  {member.username[0]?.toUpperCase()}
+                </AvatarFallback>
+              </Avatar>
+            ))}
+            {team.members.length > 4 && (
+              <div className="h-6 w-6 rounded-full bg-muted flex items-center justify-center text-xs border-2 border-background">
+                +{team.members.length - 4}
+              </div>
+            )}
+          </div>
+          <span className="text-xs text-muted-foreground">
+            {team.members.find(m => m.is_leader)?.username} (leader)
+            {team.members.length > 1 && ` + ${team.members.length - 1} more`}
+          </span>
+        </div>
+      )}
     </div>
   );
 
@@ -294,7 +365,7 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
               No teams open to anyone right now
             </p>
           ) : (
-            <ScrollArea className="max-h-[250px]">
+            <ScrollArea className="max-h-[350px]">
               <div className="space-y-3 pr-2">
                 {anyoneTeams.map(renderTeamCard)}
               </div>
@@ -308,7 +379,7 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
               No friend teams looking for members
             </p>
           ) : (
-            <ScrollArea className="max-h-[250px]">
+            <ScrollArea className="max-h-[350px]">
               <div className="space-y-3 pr-2">
                 {friendsTeams.map(renderTeamCard)}
               </div>

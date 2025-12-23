@@ -6,10 +6,11 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Calendar, Clock, UserPlus, MessageCircle, Search, Check } from 'lucide-react';
+import { Calendar, Clock, UserPlus, MessageCircle, Search, Check, Users } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { isValidUUID } from '@/lib/validation';
+import ProfileLookingForTeammatesSection from '@/components/ProfileLookingForTeammatesSection';
 
 interface Profile {
   user_id: string;
@@ -272,6 +273,14 @@ const UserProfile = () => {
               </div>
             )}
           </div>
+        </div>
+
+        {/* Looking for Teammates Section */}
+        <div className="mb-8">
+          <ProfileLookingForTeammatesSection 
+            targetUserId={profile.user_id} 
+            isOwnProfile={isOwnProfile} 
+          />
         </div>
 
         {/* Tabs */}
