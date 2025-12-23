@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import Header from '@/components/Header';
-import Footer from '@/components/Footer';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
@@ -200,29 +199,25 @@ const UserProfile = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background">
-        <Header />
+      <AuthenticatedLayout>
         <div className="container py-16 text-center text-muted-foreground">Loading...</div>
-      </div>
+      </AuthenticatedLayout>
     );
   }
 
   if (!profile) {
     return (
-      <div className="min-h-screen bg-background">
-        <Header />
+      <AuthenticatedLayout>
         <div className="container py-16 text-center text-muted-foreground">User not found</div>
-      </div>
+      </AuthenticatedLayout>
     );
   }
 
   const isOwnProfile = user?.id === profile.user_id;
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <Header />
-
-      <main className="container py-8 max-w-4xl flex-1">
+    <AuthenticatedLayout>
+      <div className="container py-8 max-w-4xl">
         {/* Profile Header */}
         <div className="glass-card p-6 mb-8 animate-fade-in">
           <div className="flex items-center gap-4">
@@ -370,9 +365,8 @@ const UserProfile = () => {
             )}
           </TabsContent>
         </Tabs>
-      </main>
-      <Footer />
-    </div>
+      </div>
+    </AuthenticatedLayout>
   );
 };
 

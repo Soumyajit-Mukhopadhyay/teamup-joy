@@ -1,15 +1,16 @@
 import { useState, useMemo, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
-import Header from '@/components/Header';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import HeroSection from '@/components/HeroSection';
 import FilterBar from '@/components/FilterBar';
 import HackathonCard from '@/components/HackathonCard';
 import HackathonCalendar from '@/components/HackathonCalendar';
-import Footer from '@/components/Footer';
 import { useHackathons } from '@/hooks/useHackathons';
 import { useIsAdmin } from '@/hooks/useIsAdmin';
+import { useAuth } from '@/contexts/AuthContext';
 
 const Index = () => {
+  const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const { isAdmin } = useIsAdmin();
@@ -40,11 +41,10 @@ const Index = () => {
   }, [hackathons, search, selectedRegion, selectedTopic]);
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <Header />
+    <AuthenticatedLayout containerClassName={user ? 'md:ml-64' : ''}>
       <HeroSection />
       
-      <main className="container pb-16 flex-1">
+      <div className="container pb-16">
         <FilterBar
           view={view}
           setView={setView}
@@ -83,9 +83,8 @@ const Index = () => {
             <p className="text-sm">Try adjusting your filters</p>
           </div>
         )}
-      </main>
-      <Footer />
-    </div>
+      </div>
+    </AuthenticatedLayout>
   );
 };
 

@@ -1,7 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import Header from '@/components/Header';
-import Footer from '@/components/Footer';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
@@ -9,7 +8,7 @@ import { ScrollArea } from '@/components/ui/scroll-area';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Users, UserPlus, ArrowLeft, MessageCircle, Check, Clock, Crown } from 'lucide-react';
+import { Users, UserPlus, ArrowLeft, MessageCircle, Check, Clock, Crown, Loader2 } from 'lucide-react';
 
 interface TeamMember {
   user_id: string;
@@ -242,31 +241,28 @@ const TeamDetailPage = () => {
 
   if (loading) {
     return (
-      <div className="min-h-screen bg-background">
-        <Header />
-        <div className="container py-16 text-center text-muted-foreground">Loading...</div>
-        <Footer />
-      </div>
+      <AuthenticatedLayout>
+        <div className="container py-16 text-center text-muted-foreground">
+          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-2" />
+          Loading team details...
+        </div>
+      </AuthenticatedLayout>
     );
   }
 
   if (!team) {
     return (
-      <div className="min-h-screen bg-background">
-        <Header />
+      <AuthenticatedLayout>
         <div className="container py-16 text-center text-muted-foreground">Team not found</div>
-        <Footer />
-      </div>
+      </AuthenticatedLayout>
     );
   }
 
   const canJoin = team.looking_for_teammates && !isMember && user && user.id !== team.leader_id;
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <Header />
-
-      <main className="container py-8 max-w-2xl flex-1">
+    <AuthenticatedLayout>
+      <div className="container py-8 max-w-2xl">
         <Button
           variant="ghost"
           onClick={() => navigate(-1)}
@@ -407,10 +403,8 @@ const TeamDetailPage = () => {
             </div>
           </ScrollArea>
         </div>
-      </main>
-
-      <Footer />
-    </div>
+      </div>
+    </AuthenticatedLayout>
   );
 };
 
