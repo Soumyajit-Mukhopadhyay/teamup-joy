@@ -122,6 +122,38 @@ const Teams = () => {
       return;
     }
     fetchTeams();
+
+    // Subscribe to realtime updates for team members
+    const channel = supabase
+      .channel('my-teams-realtime')
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'team_members',
+          filter: `user_id=eq.${user.id}`,
+        },
+        () => {
+          fetchTeams();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'teams',
+        },
+        () => {
+          fetchTeams();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user, authLoading]);
 
   const fetchTeams = async () => {

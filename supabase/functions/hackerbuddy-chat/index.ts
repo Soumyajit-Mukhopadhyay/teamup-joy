@@ -551,6 +551,103 @@ const tools = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "report_impossible_task",
+      description: "Report that a task is impossible to complete with current capabilities. This notifies admins so they can add the capability. Use when you genuinely cannot perform what the user asks.",
+      parameters: {
+        type: "object",
+        properties: {
+          task_description: { 
+            type: "string", 
+            description: "What the user asked for that cannot be done" 
+          },
+          reason: { 
+            type: "string", 
+            description: "Why this task cannot be completed (missing capability, API limitation, etc.)" 
+          },
+        },
+        required: ["task_description", "reason"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "request_feedback",
+      description: "Ask the user for feedback on a completed action to improve AI learning. Use this after completing complex tasks or when unsure if the result was satisfactory.",
+      parameters: {
+        type: "object",
+        properties: {
+          action_summary: { 
+            type: "string", 
+            description: "Brief summary of what was done" 
+          },
+          specific_question: { 
+            type: "string", 
+            description: "Optional: Specific question to ask about the action" 
+          },
+        },
+        required: ["action_summary"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "admin_add_workflow",
+      description: "ADMIN ONLY: Add a workflow pattern by describing it in natural language. The AI will decode the logic and store it for future use.",
+      parameters: {
+        type: "object",
+        properties: {
+          workflow_description: { 
+            type: "string", 
+            description: "Natural language description of the workflow (e.g., 'When user says create multiple teams, call create_team for each team name')" 
+          },
+          example_input: { 
+            type: "string", 
+            description: "Example user message that should trigger this workflow" 
+          },
+          expected_tools: { 
+            type: "array",
+            items: { type: "string" },
+            description: "List of tools that should be called in sequence" 
+          },
+        },
+        required: ["workflow_description"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_impossible_tasks",
+      description: "ADMIN ONLY: Get the list of tasks reported as impossible by the AI, so admins can review and potentially add new capabilities.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "resolve_impossible_task",
+      description: "ADMIN ONLY: Mark an impossible task as resolved (capability added or determined not needed).",
+      parameters: {
+        type: "object",
+        properties: {
+          task_id: { 
+            type: "string", 
+            description: "ID of the impossible task to resolve" 
+          },
+          resolution_notes: { 
+            type: "string", 
+            description: "Notes about how it was resolved" 
+          },
+        },
+        required: ["task_id"],
+      },
+    },
+  },
 ];
 
 // Guardrails - actions that require confirmation
@@ -3431,6 +3528,248 @@ async function executeToolCall(
           action_type: "delete_ai_pattern",
           message: `✅ Pattern deleted!\nHash: ${patternToDelete.pattern_hash}\nExample: "${patternToDelete.example_request?.slice(0, 50)}..."`,
           deleted_hash: patternToDelete.pattern_hash,
+        }
+      };
+    }
+
+    case "report_impossible_task": {
+      const { task_description, reason } = args;
+      
+      if (!task_description || !reason) {
+        return {
+          result: {
+            success: false,
+            error: "Missing task_description or reason",
+            message: "❌ Please provide what the task was and why it's impossible."
+          }
+        };
+      }
+
+      // Insert into impossible tasks table
+      await supabase.from("ai_impossible_tasks").insert({
+        user_id: userId,
+        user_message: task_description.slice(0, 1000),
+        reason: reason.slice(0, 500),
+        ai_response: "Task reported as impossible by AI",
+      });
+
+      // Also create an admin notification
+      await supabase.from("admin_notifications").insert({
+        type: "ai_impossible_task",
+        title: "AI Cannot Perform Task",
+        message: `Task: ${task_description.slice(0, 200)}\nReason: ${reason.slice(0, 200)}`,
+        reference_type: "ai_task",
+      });
+
+      return {
+        result: {
+          success: true,
+          action_type: "report_impossible_task",
+          message: `I've notified the admins that I can't perform this task. They may add this capability in the future.\n\n**What I couldn't do:** ${task_description.slice(0, 100)}...\n**Reason:** ${reason}`,
+        }
+      };
+    }
+
+    case "request_feedback": {
+      const { action_summary, specific_question } = args;
+      
+      const feedbackQuestion = specific_question 
+        ? specific_question 
+        : "Did I complete this task correctly? If not, please tell me what I should have done differently so I can learn.";
+      
+      return {
+        result: {
+          success: true,
+          action_type: "request_feedback",
+          awaiting_feedback: true,
+          message: `✅ **Completed:** ${action_summary}\n\n💬 **Quick feedback:** ${feedbackQuestion}\n\n_Your feedback helps me learn and improve for similar tasks in the future!_`,
+        }
+      };
+    }
+
+    case "admin_add_workflow": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can add workflow patterns.",
+            message: "❌ Admin access required."
+          }
+        };
+      }
+
+      const { workflow_description, example_input, expected_tools } = args;
+      
+      if (!workflow_description) {
+        return {
+          result: {
+            success: false,
+            error: "Please provide a workflow description.",
+            message: "❌ Missing workflow description."
+          }
+        };
+      }
+
+      // Decode the workflow logic from natural language
+      const decodedLogic = {
+        description: workflow_description,
+        trigger_keywords: workflow_description.toLowerCase().match(/\b(when|if|create|add|remove|delete|join|leave|send|accept)\b/g) || [],
+        inferred_tools: expected_tools || [],
+      };
+
+      // Store in ai_admin_training table
+      await supabase.from("ai_admin_training").insert({
+        admin_id: userId,
+        workflow_description: workflow_description.slice(0, 2000),
+        decoded_logic: decodedLogic,
+        tool_sequence: expected_tools || [],
+        example_input: example_input?.slice(0, 500) || null,
+      });
+
+      // Also add to learned patterns if we have example and tools
+      if (example_input && expected_tools?.length) {
+        const patternHash = generatePatternHash(example_input);
+        await supabase.from("ai_learned_patterns").upsert({
+          pattern_hash: patternHash,
+          request_pattern: patternHash,
+          tool_sequence: expected_tools,
+          example_request: example_input.slice(0, 500),
+          example_response: `Workflow: ${workflow_description.slice(0, 200)}`,
+          success_count: 15, // High priority for admin-added workflows
+          failure_count: 0,
+        }, { onConflict: 'pattern_hash' });
+      }
+
+      return {
+        result: {
+          success: true,
+          action_type: "admin_add_workflow",
+          message: `✅ Workflow added!\n\n**Description:** ${workflow_description.slice(0, 100)}...\n${expected_tools?.length ? `**Tools:** ${expected_tools.join(" → ")}` : ''}\n\nI'll use this pattern for similar future requests.`,
+        }
+      };
+    }
+
+    case "get_impossible_tasks": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can view impossible tasks.",
+            message: "❌ Admin access required."
+          }
+        };
+      }
+
+      const { data: tasks } = await supabase
+        .from("ai_impossible_tasks")
+        .select("*")
+        .eq("is_resolved", false)
+        .order("created_at", { ascending: false })
+        .limit(20);
+
+      if (!tasks?.length) {
+        return {
+          result: {
+            success: true,
+            message: "✅ No unresolved impossible tasks! The AI can handle everything users have asked for.",
+            tasks: [],
+          }
+        };
+      }
+
+      const taskList = tasks.map((t: any, i: number) => 
+        `${i + 1}. **${t.user_message.slice(0, 80)}...**\n   Reason: ${t.reason.slice(0, 100)}...\n   ID: ${t.id}`
+      ).join("\n\n");
+
+      return {
+        result: {
+          success: true,
+          action_type: "get_impossible_tasks",
+          message: `📋 **Unresolved Impossible Tasks (${tasks.length})**\n\n${taskList}\n\nUse resolve_impossible_task to mark any as resolved.`,
+          tasks: tasks.map((t: any) => ({
+            id: t.id,
+            task: t.user_message,
+            reason: t.reason,
+            created_at: t.created_at,
+          })),
+        }
+      };
+    }
+
+    case "resolve_impossible_task": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can resolve impossible tasks.",
+            message: "❌ Admin access required."
+          }
+        };
+      }
+
+      const { task_id, resolution_notes } = args;
+      
+      if (!task_id) {
+        return {
+          result: {
+            success: false,
+            error: "Please provide the task ID to resolve.",
+            message: "❌ Missing task ID."
+          }
+        };
+      }
+
+      const { data: task, error } = await supabase
+        .from("ai_impossible_tasks")
+        .update({
+          is_resolved: true,
+          resolved_by: userId,
+          resolved_at: new Date().toISOString(),
+          ai_response: resolution_notes || "Resolved by admin",
+        })
+        .eq("id", task_id)
+        .select()
+        .single();
+
+      if (error || !task) {
+        return {
+          result: {
+            success: false,
+            error: "Task not found or already resolved.",
+            message: "❌ Could not find that task."
+          }
+        };
+      }
+
+      return {
+        result: {
+          success: true,
+          action_type: "resolve_impossible_task",
+          message: `✅ Task marked as resolved!\n\n**Task:** ${task.user_message.slice(0, 100)}...\n${resolution_notes ? `**Notes:** ${resolution_notes}` : ''}`,
         }
       };
     }
