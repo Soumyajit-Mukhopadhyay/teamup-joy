@@ -1,8 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import Header from '@/components/Header';
-import Footer from '@/components/Footer';
-import AppSidebar from '@/components/AppSidebar';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
@@ -457,19 +455,15 @@ const LookingForTeammates = () => {
 
   if (authLoading) {
     return (
-      <div className="min-h-screen bg-background">
-        <Header />
+      <AuthenticatedLayout>
         <div className="container py-16 text-center text-muted-foreground">Loading...</div>
-      </div>
+      </AuthenticatedLayout>
     );
   }
 
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <Header />
-      <AppSidebar />
-
-      <main className="container py-8 max-w-4xl flex-1 md:ml-64">
+    <AuthenticatedLayout>
+      <div className="container py-8 max-w-4xl">
         {/* Page Header */}
         <div className="flex items-center gap-4 mb-6">
           <div className="h-12 w-12 rounded-lg bg-primary/20 flex items-center justify-center">
@@ -558,10 +552,8 @@ const LookingForTeammates = () => {
             </TabsContent>
           </Tabs>
         )}
-      </main>
-
-      <Footer />
-    </div>
+      </div>
+    </AuthenticatedLayout>
   );
 };
 

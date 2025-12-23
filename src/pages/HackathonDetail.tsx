@@ -1,7 +1,6 @@
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useHackathon } from '@/hooks/useHackathons';
-import Header from '@/components/Header';
-import Footer from '@/components/Footer';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { format, parseISO } from 'date-fns';
@@ -22,24 +21,22 @@ const HackathonDetail = () => {
   
   if (loading) {
     return (
-      <div className="min-h-screen bg-background">
-        <Header />
-        <main className="container py-16 text-center">
+      <AuthenticatedLayout>
+        <div className="container py-16 text-center">
           <p className="text-muted-foreground">Loading...</p>
-        </main>
-      </div>
+        </div>
+      </AuthenticatedLayout>
     );
   }
 
   if (!hackathon) {
     return (
-      <div className="min-h-screen bg-background">
-        <Header />
-        <main className="container py-16 text-center">
+      <AuthenticatedLayout>
+        <div className="container py-16 text-center">
           <h1 className="text-2xl font-bold mb-4">Hackathon not found</h1>
           <Button onClick={() => navigate('/')}>Go Back</Button>
-        </main>
-      </div>
+        </div>
+      </AuthenticatedLayout>
     );
   }
 
@@ -100,11 +97,20 @@ const HackathonDetail = () => {
     window.open(hackathon.url, '_blank');
   };
 
+  if (!hackathon) {
+    return (
+      <AuthenticatedLayout>
+        <div className="container py-16 text-center">
+          <h1 className="text-2xl font-bold mb-4">Hackathon not found</h1>
+          <Button onClick={() => navigate('/')}>Go Back</Button>
+        </div>
+      </AuthenticatedLayout>
+    );
+  }
+
   return (
-    <div className="min-h-screen flex flex-col bg-background">
-      <Header />
-      
-      <main className="container py-8 flex-1">
+    <AuthenticatedLayout>
+      <div className="container py-8">
         <Button variant="ghost" className="mb-6 gap-2" onClick={() => navigate('/')}>
           <ArrowLeft className="h-4 w-4" />
           Back to Hackathons
@@ -314,9 +320,8 @@ const HackathonDetail = () => {
             )}
           </div>
         </div>
-      </main>
-      <Footer />
-    </div>
+      </div>
+    </AuthenticatedLayout>
   );
 };
 

@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import Header from '@/components/Header';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
@@ -187,12 +187,11 @@ const AdminPanel = () => {
 
   if (authLoading || checkingRole) {
     return (
-      <div className="min-h-screen bg-background">
-        <Header />
+      <AuthenticatedLayout showFooter={false}>
         <div className="container py-16 text-center text-muted-foreground">
           Checking permissions...
         </div>
-      </div>
+      </AuthenticatedLayout>
     );
   }
 
@@ -203,10 +202,8 @@ const AdminPanel = () => {
   const unreadCount = notifications.filter(n => !n.is_read).length;
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header />
-
-      <main className="container py-8 max-w-4xl">
+    <AuthenticatedLayout showFooter={false}>
+      <div className="container py-8 max-w-4xl">
         <div className="flex items-center gap-3 mb-8">
           <div className="h-12 w-12 rounded-lg bg-primary/20 flex items-center justify-center">
             <Shield className="h-6 w-6 text-primary" />
@@ -362,8 +359,8 @@ const AdminPanel = () => {
             </div>
           )
         )}
-      </main>
-    </div>
+      </div>
+    </AuthenticatedLayout>
   );
 };
 

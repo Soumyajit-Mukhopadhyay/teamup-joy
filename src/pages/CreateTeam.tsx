@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import Header from '@/components/Header';
+import AuthenticatedLayout from '@/components/AuthenticatedLayout';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -218,34 +218,30 @@ const CreateTeam = () => {
 
   if (hackathonLoading) {
     return (
-      <div className="min-h-screen bg-background">
-        <Header />
+      <AuthenticatedLayout showFooter={false}>
         <div className="container py-16 text-center">
           <p className="text-muted-foreground">Loading...</p>
         </div>
-      </div>
+      </AuthenticatedLayout>
     );
   }
 
   if (!hackathon) {
     return (
-      <div className="min-h-screen bg-background">
-        <Header />
+      <AuthenticatedLayout showFooter={false}>
         <div className="container py-16 text-center">
           <p className="text-muted-foreground">Hackathon not found</p>
           <Button onClick={() => navigate('/')} className="mt-4">
             Go back
           </Button>
         </div>
-      </div>
+      </AuthenticatedLayout>
     );
   }
 
   return (
-    <div className="min-h-screen bg-background">
-      <Header />
-
-      <main className="container py-8 max-w-2xl">
+    <AuthenticatedLayout showFooter={false}>
+      <div className="container py-8 max-w-2xl">
         <Button
           variant="ghost"
           onClick={() => navigate(-1)}
@@ -420,8 +416,8 @@ const CreateTeam = () => {
             </div>
           )}
         </div>
-      </main>
-    </div>
+      </div>
+    </AuthenticatedLayout>
   );
 };
 

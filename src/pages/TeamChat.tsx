@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import Header from '@/components/Header';
+import AppSidebar from '@/components/AppSidebar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAuth } from '@/contexts/AuthContext';
@@ -366,6 +367,7 @@ const TeamChat = () => {
   return (
     <div className="min-h-screen bg-background flex flex-col">
       <Header />
+      <AppSidebar />
 
       {/* Chat Header */}
       <div className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-16 z-40">
