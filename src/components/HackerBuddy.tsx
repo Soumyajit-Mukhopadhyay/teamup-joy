@@ -305,13 +305,26 @@ const HackerBuddy = () => {
     const hackathonMatch = pathname.match(/^\/hackathon\/([^/]+)$/);
     const currentHackathonId = hackathonMatch?.[1];
 
+    // Get fresh session
+    const { data: sessionData } = await supabase.auth.getSession();
+    let accessToken = sessionData.session?.access_token;
+    
+    if (!accessToken) {
+      const { data: refreshData } = await supabase.auth.refreshSession();
+      accessToken = refreshData.session?.access_token;
+    }
+    
+    if (!accessToken) {
+      return { success: false, response: '❌ Session expired. Please sign in again.' };
+    }
+
     const response = await fetch(
       `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/hackerbuddy-chat`,
       {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+          Authorization: `Bearer ${accessToken}`,
           apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
         },
         body: JSON.stringify({
@@ -463,13 +476,35 @@ const HackerBuddy = () => {
     const currentHackathonId = hackathonMatch?.[1];
 
     try {
+      // Get fresh session - refresh if needed
+      const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
+      
+      if (sessionError || !sessionData.session?.access_token) {
+        // Try to refresh the session
+        const { data: refreshData, error: refreshError } = await supabase.auth.refreshSession();
+        
+        if (refreshError || !refreshData.session?.access_token) {
+          toast.error('Session expired. Please sign in again.');
+          setIsLoading(false);
+          return;
+        }
+      }
+      
+      const accessToken = (await supabase.auth.getSession()).data.session?.access_token;
+      
+      if (!accessToken) {
+        toast.error('Please sign in to use HackerBuddy');
+        setIsLoading(false);
+        return;
+      }
+
       const response = await fetch(
         `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/hackerbuddy-chat`,
         {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            Authorization: `Bearer ${(await supabase.auth.getSession()).data.session?.access_token}`,
+            Authorization: `Bearer ${accessToken}`,
             apikey: import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY,
           },
           body: JSON.stringify({
