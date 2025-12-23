@@ -20,6 +20,7 @@ import AdminPanel from "./pages/AdminPanel";
 import TeamManage from "./pages/TeamManage";
 import ResetPassword from "./pages/ResetPassword";
 import NotFound from "./pages/NotFound";
+import TeamDetailPage from "./components/TeamDetailPage";
 
 const queryClient = new QueryClient();
 
@@ -38,6 +39,7 @@ const App = () => (
             <Route path="/hackathon/:hackathonId/team" element={<CreateTeam />} />
             <Route path="/teams" element={<Teams />} />
             <Route path="/team/:teamId/manage" element={<TeamManage />} />
+            <Route path="/team/:teamId/details" element={<TeamDetailPage />} />
             <Route path="/notifications" element={<Notifications />} />
             <Route path="/team/:teamId/chat" element={<TeamChat />} />
             <Route path="/profile" element={<Profile />} />

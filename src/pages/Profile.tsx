@@ -6,10 +6,11 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { User, Users, Calendar, MessageCircle, Clock, Search as SearchIcon, X } from 'lucide-react';
+import { User, Users, Calendar, MessageCircle, Clock, Search as SearchIcon, X, UserPlus } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { format, parseISO, isAfter } from 'date-fns';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import ProfileLookingForTeammatesSection from '@/components/ProfileLookingForTeammatesSection';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -252,6 +253,16 @@ const Profile = () => {
             </div>
           </div>
         </div>
+
+        {/* Looking for Teammates Section */}
+        {user && (
+          <div className="mb-8">
+            <ProfileLookingForTeammatesSection 
+              targetUserId={user.id} 
+              isOwnProfile={true} 
+            />
+          </div>
+        )}
 
         {/* Tabs for different sections */}
         <Tabs defaultValue="teams" className="animate-fade-in">
