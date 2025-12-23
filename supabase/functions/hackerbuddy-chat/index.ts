@@ -1693,8 +1693,49 @@ Be comprehensive - extract ALL learnable patterns from the instruction.`;
     const data = await response.json();
     const content = data.choices?.[0]?.message?.content || "";
     
-    const jsonMatch = content.match(/\{[\s\S]*\}/);
-    if (!jsonMatch) {
+    // Try multiple strategies to extract JSON from response
+    let pattern: any = null;
+    
+    // Strategy 1: Look for JSON in code blocks first (```json ... ```)
+    const codeBlockMatch = content.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (codeBlockMatch) {
+      try {
+        pattern = JSON.parse(codeBlockMatch[1].trim());
+      } catch (e) {
+        console.log("Code block JSON parse failed, trying next strategy");
+      }
+    }
+    
+    // Strategy 2: Match the most complete JSON object (greedy but balanced)
+    if (!pattern) {
+      // Find all potential JSON objects
+      const jsonMatches = content.match(/\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}/g);
+      if (jsonMatches) {
+        // Try each match, prefer longer ones
+        const sortedMatches = jsonMatches.sort((a: string, b: string) => b.length - a.length);
+        for (const match of sortedMatches) {
+          try {
+            pattern = JSON.parse(match);
+            break;
+          } catch (e) {
+            continue;
+          }
+        }
+      }
+    }
+    
+    // Strategy 3: Try to extract JSON from the entire content
+    if (!pattern) {
+      try {
+        // Remove any markdown or text before/after JSON
+        const cleanedContent = content.replace(/^[\s\S]*?(\{)/, '$1').replace(/\}[\s\S]*$/, '}');
+        pattern = JSON.parse(cleanedContent);
+      } catch (e) {
+        console.log("Full content JSON parse failed");
+      }
+    }
+    
+    if (!pattern) {
       // Even if no structured pattern, store as a behavioral rule
       const fallbackHash = `admin_rule_${Date.now()}`;
       await supabase.from("ai_learned_patterns").insert({
@@ -1707,14 +1748,14 @@ Be comprehensive - extract ALL learnable patterns from the instruction.`;
         failure_count: 0,
       });
       
+      console.log("New pattern created:", fallbackHash);
+      
       return { 
         success: true, 
         message: `✅ **Training Applied** (as behavioral rule)\n\n📝 Instruction: "${instruction.slice(0, 100)}..."\n⚡ Priority: ${priority || 'normal'}\n\nI will now follow this instruction in future interactions.`,
         appliedPattern: { pattern_hash: fallbackHash, type: 'behavioral_rule' }
       };
     }
-    
-    const pattern = JSON.parse(jsonMatch[0]);
     
     // Calculate success_count based on priority
     const priorityScores = { critical: 100, high: 50, normal: 20, low: 10 };
