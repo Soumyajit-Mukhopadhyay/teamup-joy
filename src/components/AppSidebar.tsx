@@ -84,7 +84,7 @@ const AppSidebar = () => {
       {/* Sidebar */}
       <aside
         className={cn(
-          'fixed top-16 left-0 z-50 h-[calc(100vh-4rem)] bg-background border-r border-border transition-all duration-300',
+          'fixed top-16 left-0 z-40 h-[calc(100vh-4rem)] bg-background border-r border-border transition-all duration-300',
           isCollapsed ? 'w-16' : 'w-64',
           isMobileOpen ? 'translate-x-0' : '-translate-x-full md:translate-x-0'
         )}

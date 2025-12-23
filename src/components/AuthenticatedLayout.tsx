@@ -27,8 +27,10 @@ const AuthenticatedLayout = ({
       
       <main
         className={cn(
-          'flex-1',
-          user && 'md:ml-64 transition-all duration-300',
+          'flex-1 transition-all duration-300',
+          // Always reserve space for collapsed sidebar (w-16 = 4rem) when logged in
+          // This ensures content doesn't go under the sidebar
+          user && 'md:ml-16',
           containerClassName
         )}
       >

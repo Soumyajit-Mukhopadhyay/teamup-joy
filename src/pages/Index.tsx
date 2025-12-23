@@ -41,10 +41,10 @@ const Index = () => {
   }, [hackathons, search, selectedRegion, selectedTopic]);
 
   return (
-    <AuthenticatedLayout containerClassName={user ? 'md:ml-64' : ''}>
+    <AuthenticatedLayout>
       <HeroSection />
       
-      <div className="container pb-16">
+      <div className="container pb-16 max-w-6xl mx-auto">
         <FilterBar
           view={view}
           setView={setView}
@@ -61,7 +61,7 @@ const Index = () => {
             <p className="text-lg">Loading hackathons...</p>
           </div>
         ) : view === 'grid' ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
             {filteredHackathons.map((hackathon, idx) => (
               <HackathonCard 
                 key={hackathon.id} 
