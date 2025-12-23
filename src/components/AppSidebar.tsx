@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
 import { Button } from '@/components/ui/button';
@@ -27,14 +27,26 @@ interface NavItem {
   badge?: number;
 }
 
+const SIDEBAR_COLLAPSED_KEY = 'sidebar-collapsed';
+
 const AppSidebar = () => {
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
   const { isAdmin } = useIsAdmin();
   const { unreadCount, hasNotification } = useNotifications();
-  const [isCollapsed, setIsCollapsed] = useState(false);
+  
+  // Initialize from localStorage to persist across navigations
+  const [isCollapsed, setIsCollapsed] = useState(() => {
+    const saved = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
+    return saved === 'true';
+  });
   const [isMobileOpen, setIsMobileOpen] = useState(false);
+  
+  // Persist collapsed state to localStorage
+  useEffect(() => {
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, String(isCollapsed));
+  }, [isCollapsed]);
 
   if (!user) return null;
 
