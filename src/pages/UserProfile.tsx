@@ -270,13 +270,15 @@ const UserProfile = () => {
           </div>
         </div>
 
-        {/* Looking for Teammates Section */}
-        <div className="mb-8">
-          <ProfileLookingForTeammatesSection 
-            targetUserId={profile.user_id} 
-            isOwnProfile={isOwnProfile} 
-          />
-        </div>
+        {/* Looking for Teammates Section - Only show on own profile */}
+        {isOwnProfile && (
+          <div className="mb-8">
+            <ProfileLookingForTeammatesSection 
+              targetUserId={profile.user_id} 
+              isOwnProfile={isOwnProfile} 
+            />
+          </div>
+        )}
 
         {/* Tabs */}
         <Tabs defaultValue="current" className="animate-fade-in">
@@ -289,10 +291,12 @@ const UserProfile = () => {
               <Clock className="h-4 w-4" />
               Past ({pastParticipations.length})
             </TabsTrigger>
-            <TabsTrigger value="looking" className="gap-2">
-              <Search className="h-4 w-4" />
-              Looking for Team ({lookingForTeam.length})
-            </TabsTrigger>
+            {isOwnProfile && (
+              <TabsTrigger value="looking" className="gap-2">
+                <Search className="h-4 w-4" />
+                Looking for Team ({lookingForTeam.length})
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="current">
@@ -337,33 +341,35 @@ const UserProfile = () => {
             )}
           </TabsContent>
 
-          <TabsContent value="looking">
-            {lookingForTeam.length === 0 ? (
-              <div className="glass-card p-8 text-center">
-                <Search className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
-                <p className="text-muted-foreground">Not looking for any teams currently</p>
-              </div>
-            ) : (
-              <div className="grid gap-4">
-                {lookingForTeam.map((p) => {
-                  const info = getHackathonInfo(p.hackathon_id);
-                  return (
-                    <div key={p.id} className="glass-card p-5 card-hover cursor-pointer" onClick={() => navigate(`/hackathon/${info?.slug || p.hackathon_id}`)}>
-                      <div className="flex items-center justify-between">
-                        <div>
-                          <h3 className="font-semibold">{info?.name || p.hackathon_id}</h3>
-                          <p className="text-sm text-muted-foreground">{info?.location}</p>
+          {isOwnProfile && (
+            <TabsContent value="looking">
+              {lookingForTeam.length === 0 ? (
+                <div className="glass-card p-8 text-center">
+                  <Search className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
+                  <p className="text-muted-foreground">Not looking for any teams currently</p>
+                </div>
+              ) : (
+                <div className="grid gap-4">
+                  {lookingForTeam.map((p) => {
+                    const info = getHackathonInfo(p.hackathon_id);
+                    return (
+                      <div key={p.id} className="glass-card p-5 card-hover cursor-pointer" onClick={() => navigate(`/hackathon/${info?.slug || p.hackathon_id}`)}>
+                        <div className="flex items-center justify-between">
+                          <div>
+                            <h3 className="font-semibold">{info?.name || p.hackathon_id}</h3>
+                            <p className="text-sm text-muted-foreground">{info?.location}</p>
+                          </div>
+                          <span className="text-xs bg-primary/20 text-primary px-2 py-1 rounded-full">
+                            Looking for team
+                          </span>
                         </div>
-                        <span className="text-xs bg-primary/20 text-primary px-2 py-1 rounded-full">
-                          Looking for team
-                        </span>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </TabsContent>
+                    );
+                  })}
+                </div>
+              )}
+            </TabsContent>
+          )}
         </Tabs>
       </div>
     </AuthenticatedLayout>
