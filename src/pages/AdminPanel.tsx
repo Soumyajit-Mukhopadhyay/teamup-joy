@@ -5,7 +5,7 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Check, X, Shield, Bell, Clock, Calendar, MapPin, ExternalLink } from 'lucide-react';
+import { Check, X, Shield, Bell, Clock, Calendar, MapPin, ExternalLink, Trash2 } from 'lucide-react';
 import { format } from 'date-fns';
 import { Badge } from '@/components/ui/badge';
 
@@ -202,6 +202,23 @@ const AdminPanel = () => {
     toast.success('Notification deleted');
   };
 
+  const clearAllNotifications = async () => {
+    if (!confirm('Are you sure you want to delete all notifications?')) return;
+    
+    const { error } = await supabase
+      .from('admin_notifications')
+      .delete()
+      .neq('id', '00000000-0000-0000-0000-000000000000'); // Delete all
+
+    if (error) {
+      toast.error('Failed to clear notifications');
+      return;
+    }
+
+    setNotifications([]);
+    toast.success('All notifications cleared');
+  };
+
   if (authLoading || checkingRole) {
     return (
       <AuthenticatedLayout showFooter={false}>
@@ -232,29 +249,43 @@ const AdminPanel = () => {
         </div>
 
         {/* Tabs */}
-        <div className="flex gap-2 mb-6">
-          <Button
-            variant={activeTab === 'hackathons' ? 'default' : 'outline'}
-            onClick={() => setActiveTab('hackathons')}
-            className="gap-2"
-          >
-            <Clock className="h-4 w-4" />
-            Pending Hackathons
-            {pendingHackathons.length > 0 && (
-              <Badge variant="destructive" className="ml-1">{pendingHackathons.length}</Badge>
-            )}
-          </Button>
-          <Button
-            variant={activeTab === 'notifications' ? 'default' : 'outline'}
-            onClick={() => setActiveTab('notifications')}
-            className="gap-2"
-          >
-            <Bell className="h-4 w-4" />
-            Notifications
-            {unreadCount > 0 && (
-              <Badge variant="destructive" className="ml-1">{unreadCount}</Badge>
-            )}
-          </Button>
+        <div className="flex items-center justify-between gap-4 mb-6 flex-wrap">
+          <div className="flex gap-2">
+            <Button
+              variant={activeTab === 'hackathons' ? 'default' : 'outline'}
+              onClick={() => setActiveTab('hackathons')}
+              className="gap-2"
+            >
+              <Clock className="h-4 w-4" />
+              Pending Hackathons
+              {pendingHackathons.length > 0 && (
+                <Badge variant="destructive" className="ml-1">{pendingHackathons.length}</Badge>
+              )}
+            </Button>
+            <Button
+              variant={activeTab === 'notifications' ? 'default' : 'outline'}
+              onClick={() => setActiveTab('notifications')}
+              className="gap-2"
+            >
+              <Bell className="h-4 w-4" />
+              Notifications
+              {unreadCount > 0 && (
+                <Badge variant="destructive" className="ml-1">{unreadCount}</Badge>
+              )}
+            </Button>
+          </div>
+          
+          {activeTab === 'notifications' && notifications.length > 0 && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={clearAllNotifications}
+              className="gap-2 text-destructive hover:text-destructive"
+            >
+              <Trash2 className="h-4 w-4" />
+              Clear All
+            </Button>
+          )}
         </div>
 
         {loading ? (

@@ -279,11 +279,16 @@ const Teams = () => {
       );
 
       if (remainingTeams.length === 0) {
-        await supabase
+        // Try deleting by hackathon_id (could be slug or uuid)
+        const { error: deleteError } = await supabase
           .from('hackathon_participations')
           .delete()
           .eq('user_id', user.id)
           .eq('hackathon_id', selectedTeam.hackathon_id);
+
+        if (!deleteError) {
+          toast.info(`Removed from ${selectedTeam.hackathon_name || 'hackathon'} current hackathons`);
+        }
       }
 
       toast.success('Left the team successfully');

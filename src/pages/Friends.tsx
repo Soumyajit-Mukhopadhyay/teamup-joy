@@ -199,19 +199,32 @@ const Friends = () => {
       return;
     }
 
-    // Check if request already exists (either direction)
+    // Check if ANY request already exists (regardless of status - covers accepted, pending, rejected)
     const { data: existingRequest } = await supabase
       .from('friend_requests')
       .select('id, status')
       .or(`and(from_user_id.eq.${user.id},to_user_id.eq.${toUserId}),and(from_user_id.eq.${toUserId},to_user_id.eq.${user.id})`)
-      .eq('status', 'pending')
       .limit(1);
 
     if (existingRequest && existingRequest.length > 0) {
-      toast.error('A friend request already exists');
-      setSearchQuery('');
-      setSearchResults([]);
-      return;
+      const status = existingRequest[0].status;
+      if (status === 'pending') {
+        toast.error('A friend request is already pending');
+      } else if (status === 'accepted') {
+        toast.error('You are already friends with this user');
+      } else {
+        // Rejected - allow resending by deleting old request first
+        await supabase
+          .from('friend_requests')
+          .delete()
+          .eq('id', existingRequest[0].id);
+      }
+      
+      if (status !== 'rejected') {
+        setSearchQuery('');
+        setSearchResults([]);
+        return;
+      }
     }
 
     const { error } = await supabase
@@ -222,6 +235,7 @@ const Friends = () => {
       });
 
     if (error) {
+      console.error('Friend request error:', error);
       toast.error('Failed to send friend request');
     } else {
       toast.success('Friend request sent!');
