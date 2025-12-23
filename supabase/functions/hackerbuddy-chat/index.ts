@@ -597,25 +597,43 @@ const tools = [
     type: "function",
     function: {
       name: "admin_add_workflow",
-      description: "ADMIN ONLY: Add a workflow pattern by describing it in natural language. The AI will decode the logic and store it for future use.",
+      description: "ADMIN ONLY: Add a workflow pattern using NATURAL LANGUAGE. The AI will automatically analyze your description and decode the exact tool sequence. No need to know tool names! Just describe what you want in plain English.",
       parameters: {
         type: "object",
         properties: {
           workflow_description: { 
             type: "string", 
-            description: "Natural language description of the workflow (e.g., 'When user says create multiple teams, call create_team for each team name')" 
+            description: "Natural language description of the workflow. Examples: 'When someone says they want to make a team, create a team for them', 'If user asks to add a friend, send a friend request', 'When user wants to leave all teams, leave them from every team'" 
           },
-          example_input: { 
-            type: "string", 
-            description: "Example user message that should trigger this workflow" 
-          },
-          expected_tools: { 
+          example_phrases: { 
             type: "array",
             items: { type: "string" },
-            description: "List of tools that should be called in sequence" 
+            description: "Optional: Example phrases that should trigger this workflow (in plain English)" 
           },
         },
         required: ["workflow_description"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "admin_train_from_feedback",
+      description: "ADMIN ONLY: Process natural language feedback to train the AI. The feedback analyzer will decode the user's intent and create the appropriate training patterns. No tool names needed!",
+      parameters: {
+        type: "object",
+        properties: {
+          feedback: { 
+            type: "string", 
+            description: "The natural language feedback. Examples: 'When I said make me a team, you should have created one', 'Asking to find teammates should search for teams looking for members', 'Remove my friend should unfriend them'" 
+          },
+          correction_type: {
+            type: "string",
+            enum: ["wrong_action", "missing_action", "extra_action", "wrong_order", "general_improvement"],
+            description: "What type of correction this is"
+          },
+        },
+        required: ["feedback"],
       },
     },
   },
@@ -1027,29 +1045,481 @@ Use these as guidance for similar requests.\n`;
   }
 }
 
-// Get recent successful tool sequences for similar request types
-async function getSimilarSuccessfulPatterns(supabase: any, requestType: string): Promise<string> {
+// ═══════════════════════════════════════════════════════════════════════════════
+// NATURAL LANGUAGE INTENT ANALYZER
+// ═══════════════════════════════════════════════════════════════════════════════
+// This is the "Analyzer AI" that converts natural language to systematic prompts
+// It understands user intent without requiring explicit tool names
+
+// Complete tool knowledge base for the Intent Analyzer
+const TOOL_KNOWLEDGE_BASE = {
+  // Team-related intents
+  team_creation: {
+    tools: ["create_team"],
+    triggers: ["create team", "make team", "start team", "new team", "form team", "build team", "setup team", "set up team"],
+    description: "Creating a new team for a hackathon"
+  },
+  team_leaving: {
+    tools: ["leave_team"],
+    triggers: ["leave team", "exit team", "quit team", "abandon team", "drop team", "get out of team"],
+    description: "Leaving a single team"
+  },
+  team_leaving_all: {
+    tools: ["leave_all_teams_for_hackathon"],
+    triggers: ["leave all teams", "exit all teams", "quit all my teams", "leave every team"],
+    description: "Leaving all teams for a hackathon"
+  },
+  team_leaving_global: {
+    tools: ["leave_all_teams_globally"],
+    triggers: ["leave all my teams everywhere", "quit every team", "leave all teams globally"],
+    description: "Leaving all teams across all hackathons"
+  },
+  team_deletion: {
+    tools: ["delete_team"],
+    triggers: ["delete team", "remove team", "destroy team", "disband team"],
+    description: "Deleting a team (leader only)"
+  },
+  team_invite: {
+    tools: ["invite_to_team"],
+    triggers: ["invite to team", "add to team", "bring to team", "ask to join team"],
+    description: "Inviting someone to a team"
+  },
+  team_join_request: {
+    tools: ["request_to_join_team"],
+    triggers: ["join team", "request to join", "ask to join", "want to join team"],
+    description: "Requesting to join a team"
+  },
+  team_looking_toggle: {
+    tools: ["set_looking_for_teammates"],
+    triggers: ["looking for teammates", "need teammates", "want teammates", "find members", "recruit members", "open team", "close team"],
+    description: "Toggle team's looking for teammates status"
+  },
+  team_member_remove: {
+    tools: ["remove_team_member"],
+    triggers: ["remove member", "kick member", "remove from team", "kick from team"],
+    description: "Remove a member from team (leader only)"
+  },
+  teams_looking: {
+    tools: ["get_teams_looking_for_teammates"],
+    triggers: ["teams looking", "find teams", "teams need members", "teams recruiting", "open teams"],
+    description: "Find teams looking for teammates"
+  },
+  
+  // Friend-related intents
+  friend_request_send: {
+    tools: ["send_friend_request"],
+    triggers: ["add friend", "send friend request", "friend request", "make friend", "befriend", "add as friend"],
+    description: "Sending a friend request"
+  },
+  friend_request_accept: {
+    tools: ["accept_friend_request"],
+    triggers: ["accept friend", "accept request", "approve friend", "confirm friend"],
+    description: "Accepting a friend request"
+  },
+  friend_remove: {
+    tools: ["remove_friend"],
+    triggers: ["remove friend", "unfriend", "delete friend", "drop friend"],
+    description: "Removing a friend"
+  },
+  friends_list: {
+    tools: ["get_user_friends"],
+    triggers: ["my friends", "friend list", "show friends", "list friends", "who are my friends"],
+    description: "Getting the user's friend list"
+  },
+  
+  // Hackathon-related intents
+  hackathon_search: {
+    tools: ["search_hackathons"],
+    triggers: ["find hackathon", "search hackathon", "hackathons", "look for hackathon", "show hackathons"],
+    description: "Searching for hackathons"
+  },
+  hackathon_submit: {
+    tools: ["submit_hackathon"],
+    triggers: ["submit hackathon", "add hackathon", "new hackathon", "create hackathon", "propose hackathon"],
+    description: "Submitting a new hackathon for approval"
+  },
+  hackathon_calendar: {
+    tools: ["get_hackathon_calendar_link"],
+    triggers: ["calendar", "add to calendar", "google calendar", "schedule hackathon"],
+    description: "Getting Google Calendar link for hackathon"
+  },
+  hackathon_website: {
+    tools: ["visit_hackathon_website"],
+    triggers: ["website", "open link", "open website", "visit site", "official site", "hackathon link"],
+    description: "Getting hackathon website URL"
+  },
+  hackathon_share: {
+    tools: ["get_hackathon_share_link"],
+    triggers: ["share", "share link", "share hackathon", "copy link"],
+    description: "Getting shareable hackathon link"
+  },
+  
+  // Request/notification intents
+  pending_requests: {
+    tools: ["get_pending_requests"],
+    triggers: ["pending requests", "my requests", "invitations", "pending invitations", "what requests"],
+    description: "Getting all pending requests"
+  },
+  join_requests: {
+    tools: ["get_join_requests"],
+    triggers: ["join requests", "who wants to join", "team requests"],
+    description: "Getting join requests for user's teams"
+  },
+  accept_join: {
+    tools: ["accept_join_request"],
+    triggers: ["accept join", "approve join", "let them join", "allow join"],
+    description: "Accepting someone's request to join team"
+  },
+  decline_join: {
+    tools: ["decline_join_request"],
+    triggers: ["decline join", "reject join", "deny join", "refuse join"],
+    description: "Declining someone's request to join team"
+  },
+  accept_team_invite: {
+    tools: ["accept_team_request"],
+    triggers: ["accept team invite", "accept invitation", "join invited team"],
+    description: "Accepting a team invitation"
+  },
+  
+  // User-related intents
+  user_search: {
+    tools: ["search_users"],
+    triggers: ["find user", "search user", "look for user", "who is"],
+    description: "Searching for users"
+  },
+  user_teams: {
+    tools: ["get_user_teams"],
+    triggers: ["my teams", "show teams", "list teams", "what teams"],
+    description: "Getting user's teams"
+  },
+  user_participations: {
+    tools: ["get_current_participations"],
+    triggers: ["my hackathons", "participating", "my participations", "what hackathons am i in"],
+    description: "Getting user's hackathon participations"
+  },
+  
+  // Navigation intents
+  navigate: {
+    tools: ["navigate_to_page"],
+    triggers: ["go to", "navigate to", "open page", "take me to", "show me", "where is"],
+    description: "Navigating to a page"
+  },
+  
+  // Utility intents
+  datetime: {
+    tools: ["get_current_datetime"],
+    triggers: ["what time", "current time", "what date", "today", "now"],
+    description: "Getting current date/time"
+  },
+  weather: {
+    tools: ["get_weather"],
+    triggers: ["weather", "temperature", "forecast"],
+    description: "Getting weather information"
+  },
+  web_search: {
+    tools: ["web_search"],
+    triggers: ["search web", "google", "look up", "find information about"],
+    description: "Web search"
+  },
+};
+
+// Analyze natural language and extract intent + tool sequence
+async function analyzeNaturalLanguageIntent(
+  message: string,
+  apiKey: string
+): Promise<{ intent: string; tools: string[]; parameters: Record<string, any>; confidence: number }> {
+  
+  // First, do quick pattern matching for common phrases
+  const lowerMessage = message.toLowerCase();
+  let matchedIntents: { intent: string; tools: string[]; confidence: number }[] = [];
+  
+  for (const [intentName, intentData] of Object.entries(TOOL_KNOWLEDGE_BASE)) {
+    for (const trigger of intentData.triggers) {
+      if (lowerMessage.includes(trigger)) {
+        matchedIntents.push({
+          intent: intentName,
+          tools: intentData.tools,
+          confidence: trigger.length / lowerMessage.length * 100
+        });
+      }
+    }
+  }
+  
+  // Sort by confidence
+  matchedIntents.sort((a, b) => b.confidence - a.confidence);
+  
+  // If we have high confidence matches, use them
+  if (matchedIntents.length > 0 && matchedIntents[0].confidence > 20) {
+    // Check for compound requests (multiple intents)
+    const compoundWords = [' and ', ' then ', ' also ', ' plus '];
+    const isCompound = compoundWords.some(w => lowerMessage.includes(w));
+    
+    if (isCompound && matchedIntents.length > 1) {
+      // Combine unique tools from multiple matches
+      const allTools = [...new Set(matchedIntents.slice(0, 3).flatMap(m => m.tools))];
+      return {
+        intent: 'compound_' + matchedIntents.map(m => m.intent).join('_'),
+        tools: allTools,
+        parameters: {},
+        confidence: matchedIntents[0].confidence
+      };
+    }
+    
+    return {
+      intent: matchedIntents[0].intent,
+      tools: matchedIntents[0].tools,
+      parameters: {},
+      confidence: matchedIntents[0].confidence
+    };
+  }
+  
+  // For complex/ambiguous cases, use AI to analyze
   try {
-    const { data: recentSuccess } = await supabase
-      .from("ai_learning_feedback")
-      .select("user_message, tool_sequence")
-      .eq("request_type", requestType)
-      .eq("was_successful", true)
-      .order("created_at", { ascending: false })
-      .limit(3);
-    
-    if (!recentSuccess?.length) return "";
-    
-    const examples = recentSuccess
-      .filter((r: any) => r.tool_sequence?.length > 0)
-      .map((r: any) => `• "${r.user_message?.slice(0, 80)}..." → [${r.tool_sequence.join(", ")}]`)
-      .join("\n");
-    
-    if (!examples) return "";
-    
-    return `\nRecent successful ${requestType} patterns:\n${examples}\n`;
+    const analyzerPrompt = `You are an Intent Analyzer AI. Your job is to analyze natural language and extract:
+1. The user's intent (what they want to do)
+2. Which tools should be called
+3. Any parameters mentioned
+
+AVAILABLE TOOLS (and when to use them):
+${Object.entries(TOOL_KNOWLEDGE_BASE).map(([name, data]) => 
+  `- ${data.tools.join(', ')}: ${data.description}. Triggers: ${data.triggers.slice(0, 3).join(', ')}`
+).join('\n')}
+
+USER MESSAGE: "${message}"
+
+Respond in JSON format:
+{
+  "intent": "brief description of intent",
+  "tools": ["tool1", "tool2"],
+  "parameters": {"param1": "value1"},
+  "confidence": 0-100
+}`;
+
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash-lite",
+        messages: [{ role: "user", content: analyzerPrompt }],
+        stream: false,
+      }),
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      const content = data.choices?.[0]?.message?.content || "";
+      
+      // Extract JSON from response
+      const jsonMatch = content.match(/\{[\s\S]*\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]);
+        return {
+          intent: parsed.intent || 'unknown',
+          tools: parsed.tools || [],
+          parameters: parsed.parameters || {},
+          confidence: parsed.confidence || 50
+        };
+      }
+    }
   } catch (e) {
-    return "";
+    console.error("Intent analysis failed:", e);
+  }
+  
+  // Fallback
+  return { intent: 'unknown', tools: [], parameters: {}, confidence: 0 };
+}
+
+// Process natural language feedback and convert to training data
+async function processNaturalLanguageFeedback(
+  feedback: string,
+  correctionType: string,
+  supabase: any,
+  apiKey: string
+): Promise<{ success: boolean; message: string; generatedPattern?: any }> {
+  
+  const analyzerPrompt = `You are a Training Pattern Generator. Your job is to analyze natural language feedback about AI behavior and generate a systematic training pattern.
+
+FEEDBACK: "${feedback}"
+CORRECTION TYPE: ${correctionType}
+
+Your knowledge of ALL available tools:
+${Object.entries(TOOL_KNOWLEDGE_BASE).map(([name, data]) => 
+  `- ${data.tools.join(', ')}: ${data.description}`
+).join('\n')}
+
+Based on the feedback, generate a training pattern in JSON format:
+{
+  "trigger_phrases": ["phrase1", "phrase2", "phrase3"],
+  "tool_sequence": ["tool_name_1", "tool_name_2"],
+  "pattern_description": "When user says X, do Y",
+  "example_request": "Example user message",
+  "expected_behavior": "What should happen"
+}
+
+Be precise with tool names - they must match exactly from the list above.`;
+
+  try {
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [{ role: "user", content: analyzerPrompt }],
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) {
+      return { success: false, message: "Failed to analyze feedback" };
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return { success: false, message: "Could not parse feedback into pattern" };
+    }
+    
+    const pattern = JSON.parse(jsonMatch[0]);
+    
+    // Validate tool names
+    const allTools = Object.values(TOOL_KNOWLEDGE_BASE).flatMap(d => d.tools);
+    const invalidTools = pattern.tool_sequence?.filter((t: string) => !allTools.includes(t)) || [];
+    
+    if (invalidTools.length > 0) {
+      return { 
+        success: false, 
+        message: `Invalid tools detected: ${invalidTools.join(', ')}. Please check the feedback.` 
+      };
+    }
+    
+    // Generate pattern hash
+    const patternHash = pattern.trigger_phrases?.[0]?.toLowerCase().replace(/\W+/g, '_').slice(0, 50) || 'custom_pattern';
+    
+    // Store the pattern
+    await supabase.from("ai_learned_patterns").upsert({
+      pattern_hash: patternHash,
+      request_pattern: pattern.pattern_description || patternHash,
+      tool_sequence: pattern.tool_sequence || [],
+      example_request: pattern.example_request || pattern.trigger_phrases?.[0] || feedback,
+      example_response: pattern.expected_behavior || '',
+      success_count: 5, // Start with decent confidence
+      failure_count: 0,
+    }, { onConflict: 'pattern_hash' });
+    
+    return { 
+      success: true, 
+      message: `Pattern learned! Trigger: "${pattern.trigger_phrases?.[0]}" → Tools: [${pattern.tool_sequence?.join(' → ')}]`,
+      generatedPattern: pattern
+    };
+    
+  } catch (e) {
+    console.error("Feedback processing failed:", e);
+    return { success: false, message: `Error: ${e instanceof Error ? e.message : 'Unknown'}` };
+  }
+}
+
+// Process natural language workflow description
+async function processNaturalLanguageWorkflow(
+  description: string,
+  examplePhrases: string[],
+  supabase: any,
+  apiKey: string
+): Promise<{ success: boolean; message: string; generatedWorkflow?: any }> {
+  
+  const analyzerPrompt = `You are a Workflow Pattern Generator. Analyze this natural language workflow description and generate a systematic pattern.
+
+WORKFLOW DESCRIPTION: "${description}"
+${examplePhrases?.length ? `EXAMPLE PHRASES: ${examplePhrases.join(', ')}` : ''}
+
+Your knowledge of ALL available tools:
+${Object.entries(TOOL_KNOWLEDGE_BASE).map(([name, data]) => 
+  `- ${data.tools.join(', ')}: ${data.description}`
+).join('\n')}
+
+Generate a workflow pattern in JSON format:
+{
+  "workflow_name": "short_name",
+  "trigger_keywords": ["keyword1", "keyword2"],
+  "tool_sequence": ["tool_1", "tool_2"],
+  "description": "Human readable description",
+  "example_input": "Example user message",
+  "is_multi_step": true/false
+}
+
+Use EXACT tool names from the list above.`;
+
+  try {
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [{ role: "user", content: analyzerPrompt }],
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) {
+      return { success: false, message: "Failed to analyze workflow" };
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      return { success: false, message: "Could not parse workflow" };
+    }
+    
+    const workflow = JSON.parse(jsonMatch[0]);
+    
+    // Validate tool names
+    const allTools = Object.values(TOOL_KNOWLEDGE_BASE).flatMap(d => d.tools);
+    const invalidTools = workflow.tool_sequence?.filter((t: string) => !allTools.includes(t)) || [];
+    
+    if (invalidTools.length > 0) {
+      return { 
+        success: false, 
+        message: `Invalid tools: ${invalidTools.join(', ')}. Available: ${allTools.slice(0, 10).join(', ')}...` 
+      };
+    }
+    
+    // Store as learned pattern with high priority
+    const patternHash = workflow.workflow_name || 'workflow_' + Date.now();
+    
+    await supabase.from("ai_learned_patterns").upsert({
+      pattern_hash: patternHash,
+      request_pattern: workflow.description || description,
+      tool_sequence: workflow.tool_sequence || [],
+      example_request: workflow.example_input || examplePhrases?.[0] || description,
+      example_response: workflow.description,
+      success_count: 10, // High confidence for admin-created workflows
+      failure_count: 0,
+    }, { onConflict: 'pattern_hash' });
+    
+    return { 
+      success: true, 
+      message: `✅ Workflow created: "${workflow.workflow_name}"\n` +
+               `📝 Description: ${workflow.description}\n` +
+               `🔧 Tools: ${workflow.tool_sequence?.join(' → ')}\n` +
+               `🎯 Triggers: ${workflow.trigger_keywords?.join(', ')}`,
+      generatedWorkflow: workflow
+    };
+    
+  } catch (e) {
+    console.error("Workflow processing failed:", e);
+    return { success: false, message: `Error: ${e instanceof Error ? e.message : 'Unknown'}` };
   }
 }
 
@@ -3606,7 +4076,7 @@ async function executeToolCall(
         };
       }
 
-      const { workflow_description, example_input, expected_tools } = args;
+      const { workflow_description, example_phrases } = args;
       
       if (!workflow_description) {
         return {
@@ -3618,41 +4088,111 @@ async function executeToolCall(
         };
       }
 
-      // Decode the workflow logic from natural language
-      const decodedLogic = {
-        description: workflow_description,
-        trigger_keywords: workflow_description.toLowerCase().match(/\b(when|if|create|add|remove|delete|join|leave|send|accept)\b/g) || [],
-        inferred_tools: expected_tools || [],
-      };
+      // Use the new natural language workflow processor
+      const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+      if (!LOVABLE_API_KEY) {
+        return {
+          result: {
+            success: false,
+            error: "API key not configured",
+            message: "❌ Cannot process workflow - API key missing."
+          }
+        };
+      }
 
-      // Store in ai_admin_training table
-      await supabase.from("ai_admin_training").insert({
-        admin_id: userId,
-        workflow_description: workflow_description.slice(0, 2000),
-        decoded_logic: decodedLogic,
-        tool_sequence: expected_tools || [],
-        example_input: example_input?.slice(0, 500) || null,
-      });
+      const workflowResult = await processNaturalLanguageWorkflow(
+        workflow_description,
+        example_phrases || [],
+        supabase,
+        LOVABLE_API_KEY
+      );
 
-      // Also add to learned patterns if we have example and tools
-      if (example_input && expected_tools?.length) {
-        const patternHash = generatePatternHash(example_input);
-        await supabase.from("ai_learned_patterns").upsert({
-          pattern_hash: patternHash,
-          request_pattern: patternHash,
-          tool_sequence: expected_tools,
-          example_request: example_input.slice(0, 500),
-          example_response: `Workflow: ${workflow_description.slice(0, 200)}`,
-          success_count: 15, // High priority for admin-added workflows
-          failure_count: 0,
-        }, { onConflict: 'pattern_hash' });
+      if (!workflowResult.success) {
+        return {
+          result: {
+            success: false,
+            error: workflowResult.message,
+            message: `❌ ${workflowResult.message}`
+          }
+        };
       }
 
       return {
         result: {
           success: true,
           action_type: "admin_add_workflow",
-          message: `✅ Workflow added!\n\n**Description:** ${workflow_description.slice(0, 100)}...\n${expected_tools?.length ? `**Tools:** ${expected_tools.join(" → ")}` : ''}\n\nI'll use this pattern for similar future requests.`,
+          message: workflowResult.message,
+          generated_workflow: workflowResult.generatedWorkflow
+        }
+      };
+    }
+
+    case "admin_train_from_feedback": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can train from feedback.",
+            message: "❌ Admin access required."
+          }
+        };
+      }
+
+      const { feedback, correction_type } = args;
+      
+      if (!feedback) {
+        return {
+          result: {
+            success: false,
+            error: "Please provide the feedback to process.",
+            message: "❌ Missing feedback."
+          }
+        };
+      }
+
+      // Use the new natural language feedback processor
+      const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+      if (!LOVABLE_API_KEY) {
+        return {
+          result: {
+            success: false,
+            error: "API key not configured",
+            message: "❌ Cannot process feedback - API key missing."
+          }
+        };
+      }
+
+      const feedbackResult = await processNaturalLanguageFeedback(
+        feedback,
+        correction_type || 'general_improvement',
+        supabase,
+        LOVABLE_API_KEY
+      );
+
+      if (!feedbackResult.success) {
+        return {
+          result: {
+            success: false,
+            error: feedbackResult.message,
+            message: `❌ ${feedbackResult.message}`
+          }
+        };
+      }
+
+      return {
+        result: {
+          success: true,
+          action_type: "admin_train_from_feedback",
+          message: `✅ Training pattern created from your feedback!\n\n${feedbackResult.message}`,
+          generated_pattern: feedbackResult.generatedPattern
         }
       };
     }
