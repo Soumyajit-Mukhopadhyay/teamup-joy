@@ -196,36 +196,35 @@ const Friends = () => {
       toast.error('You are already friends with this user');
       setSearchQuery('');
       setSearchResults([]);
+      fetchData(); // Refresh to show correct state
       return;
     }
 
-    // Check if ANY request already exists (regardless of status - covers accepted, pending, rejected)
-    const { data: existingRequest } = await supabase
+    // Check for pending requests only
+    const { data: pendingRequest } = await supabase
       .from('friend_requests')
-      .select('id, status')
+      .select('id, status, from_user_id')
       .or(`and(from_user_id.eq.${user.id},to_user_id.eq.${toUserId}),and(from_user_id.eq.${toUserId},to_user_id.eq.${user.id})`)
+      .eq('status', 'pending')
       .limit(1);
 
-    if (existingRequest && existingRequest.length > 0) {
-      const status = existingRequest[0].status;
-      if (status === 'pending') {
-        toast.error('A friend request is already pending');
-      } else if (status === 'accepted') {
-        toast.error('You are already friends with this user');
+    if (pendingRequest && pendingRequest.length > 0) {
+      if (pendingRequest[0].from_user_id === toUserId) {
+        toast.info('This user has already sent you a friend request! Check your requests tab.');
       } else {
-        // Rejected - allow resending by deleting old request first
-        await supabase
-          .from('friend_requests')
-          .delete()
-          .eq('id', existingRequest[0].id);
+        toast.error('A friend request is already pending');
       }
-      
-      if (status !== 'rejected') {
-        setSearchQuery('');
-        setSearchResults([]);
-        return;
-      }
+      setSearchQuery('');
+      setSearchResults([]);
+      fetchData();
+      return;
     }
+
+    // Delete any old rejected/accepted requests to allow fresh request
+    await supabase
+      .from('friend_requests')
+      .delete()
+      .or(`and(from_user_id.eq.${user.id},to_user_id.eq.${toUserId}),and(from_user_id.eq.${toUserId},to_user_id.eq.${user.id})`);
 
     const { error } = await supabase
       .from('friend_requests')
@@ -399,13 +398,14 @@ const Friends = () => {
                         className="text-destructive hover:text-destructive hover:bg-destructive/10"
                         onClick={async () => {
                           if (!confirm(`Remove ${friend.profile?.username} from friends?`)) return;
+                          // Immediately remove from UI for instant feedback
+                          setFriends(prev => prev.filter(f => f.id !== friend.id));
                           await supabase.from('friends').delete().eq('id', friend.id);
                           // Also delete reciprocal friendship
                           await supabase.from('friends').delete()
                             .eq('user_id', friend.profile?.user_id)
                             .eq('friend_id', user?.id);
                           toast.success('Friend removed');
-                          fetchData();
                         }}
                       >
                         <X className="h-4 w-4" />
