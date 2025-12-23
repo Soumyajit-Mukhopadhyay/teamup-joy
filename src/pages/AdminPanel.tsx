@@ -185,6 +185,23 @@ const AdminPanel = () => {
     );
   };
 
+  const deleteNotification = async (e: React.MouseEvent, notificationId: string) => {
+    e.stopPropagation(); // Prevent marking as read when deleting
+    
+    const { error } = await supabase
+      .from('admin_notifications')
+      .delete()
+      .eq('id', notificationId);
+
+    if (error) {
+      toast.error('Failed to delete notification');
+      return;
+    }
+
+    setNotifications(prev => prev.filter(n => n.id !== notificationId));
+    toast.success('Notification deleted');
+  };
+
   if (authLoading || checkingRole) {
     return (
       <AuthenticatedLayout showFooter={false}>
@@ -341,7 +358,7 @@ const AdminPanel = () => {
                   onClick={() => markNotificationRead(notification.id)}
                 >
                   <div className="flex items-start justify-between gap-4">
-                    <div>
+                    <div className="flex-1">
                       <p className="font-medium">{notification.title}</p>
                       {notification.message && (
                         <p className="text-sm text-muted-foreground mt-1">{notification.message}</p>
@@ -350,9 +367,19 @@ const AdminPanel = () => {
                         {format(new Date(notification.created_at), 'MMM d, yyyy h:mm a')}
                       </p>
                     </div>
-                    {!notification.is_read && (
-                      <div className="h-2 w-2 rounded-full bg-primary shrink-0 mt-2" />
-                    )}
+                    <div className="flex items-center gap-2 shrink-0">
+                      {!notification.is_read && (
+                        <div className="h-2 w-2 rounded-full bg-primary" />
+                      )}
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        className="h-8 w-8 text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+                        onClick={(e) => deleteNotification(e, notification.id)}
+                      >
+                        <X className="h-4 w-4" />
+                      </Button>
+                    </div>
                   </div>
                 </div>
               ))}
