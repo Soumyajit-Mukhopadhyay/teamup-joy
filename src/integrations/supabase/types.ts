@@ -51,6 +51,7 @@ export type Database = {
         Row: {
           content: string
           created_at: string
+          hidden_at: string | null
           id: string
           role: string
           tool_calls: Json | null
@@ -60,6 +61,7 @@ export type Database = {
         Insert: {
           content: string
           created_at?: string
+          hidden_at?: string | null
           id?: string
           role: string
           tool_calls?: Json | null
@@ -69,6 +71,7 @@ export type Database = {
         Update: {
           content?: string
           created_at?: string
+          hidden_at?: string | null
           id?: string
           role?: string
           tool_calls?: Json | null

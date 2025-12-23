@@ -21,6 +21,7 @@ import TeamManage from "./pages/TeamManage";
 import ResetPassword from "./pages/ResetPassword";
 import NotFound from "./pages/NotFound";
 import TeamDetailPage from "./components/TeamDetailPage";
+import LookingForTeammates from "./pages/LookingForTeammates";
 
 const queryClient = new QueryClient();
 
@@ -47,6 +48,7 @@ const App = () => (
             <Route path="/chat/:friendId" element={<FriendChat />} />
             <Route path="/user/:userid" element={<UserProfile />} />
             <Route path="/admin" element={<AdminPanel />} />
+            <Route path="/looking-for-teammates" element={<LookingForTeammates />} />
             <Route path="*" element={<NotFound />} />
           </Routes>
           <HackerBuddy />
