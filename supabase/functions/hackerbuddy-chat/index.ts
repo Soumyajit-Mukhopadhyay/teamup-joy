@@ -3959,6 +3959,10 @@ TEAMS:
 - /teams/:hackathonId/create - Create a new team for a hackathon
 - /teams/:teamId/manage - Manage team settings, members (leader only)
 - /teams/:teamId/chat - Team group chat
+- /team/:teamId/details - View team details, members, send friend requests
+
+FIND TEAMMATES:
+- /looking-for-teammates - Browse all teams looking for members, search by hackathon/team/member name
 
 ADMIN:
 - /admin - Admin panel (only visible to admins) - Approve hackathons, manage users
@@ -3973,6 +3977,9 @@ When users ask "where is X" or "how do I find X", tell them the exact page:
 - "How do I create a team?" → Go to a hackathon page (/hackathon/:slug) and click "Create Team"
 - "Where are notifications?" → Bell icon in navigation or /notifications
 - "Where is admin panel?" → /admin (only if you're an admin)
+- "Where can I find teammates?" → Go to /looking-for-teammates - shows all teams looking for members
+- "How do I find people to join my team?" → Go to /looking-for-teammates or enable "Looking for Teammates" on your team at /teams
+- "Where is the sidebar?" → There's a sidebar on the left (on desktop, or tap the menu icon on mobile) with links to Home, My Teams, Find Teammates, Friends, Notifications, and Profile
 
 IMPORTANT: You can use navigate_to_page tool to help users go directly to any page!
 
@@ -4148,6 +4155,22 @@ Example 11 - "Remove friends A, B, C and send requests to X, Y"
 Example 12 - "Add hackathon TestHack starting 2026-03-01 ending 2026-03-15 in Boston, North America"
 → 1 TASK with ALL info provided:
   - submit_hackathon(name="TestHack", start_date="2026-03-01", end_date="2026-03-15", location="Boston", region="North America")
+
+Example 13 - "Where can I find teammates?" / "I'm looking for a team"
+→ Navigate to /looking-for-teammates - it shows all teams currently looking for members
+→ Use navigate_to_page(path="/looking-for-teammates", description="Browse teams looking for members")
+
+Example 14 - "How do I find people to join my team?"
+→ 1. Go to /teams to see your teams
+→ 2. Enable "Looking for Teammates" toggle on your team
+→ 3. Others will find you on /looking-for-teammates
+
+Example 15 - "Where is My Teams page?" / "Show me my teams"
+→ Use navigate_to_page(path="/teams", description="Your teams")
+
+Example 16 - "How do I use the sidebar?" / "Where is the sidebar menu?"
+→ On desktop, the sidebar is on the left side with links to Home, My Teams, Find Teammates, Friends, Notifications, and Profile
+→ On mobile, tap the menu icon (☰) in the top-left to open the sidebar
 
 ═══════════════════════════════════════════════════════════════
 CRITICAL RULES (MEMORIZE THESE)

@@ -2,15 +2,15 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
 import Header from '@/components/Header';
 import Footer from '@/components/Footer';
+import AppSidebar from '@/components/AppSidebar';
 import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { User, Users, Calendar, MessageCircle, Clock, Search as SearchIcon, X, UserPlus } from 'lucide-react';
+import { User, Users, Calendar, MessageCircle, Clock, Search as SearchIcon, X } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { format, parseISO, isAfter } from 'date-fns';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import ProfileLookingForTeammatesSection from '@/components/ProfileLookingForTeammatesSection';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -236,8 +236,9 @@ const Profile = () => {
   return (
     <div className="min-h-screen flex flex-col bg-background">
       <Header />
+      <AppSidebar />
 
-      <main className="container py-8 max-w-4xl flex-1">
+      <main className="container py-8 max-w-4xl flex-1 md:ml-64">
         {/* Profile Header */}
         <div className="glass-card p-6 mb-8 animate-fade-in">
           <div className="flex items-center gap-4">
@@ -253,16 +254,6 @@ const Profile = () => {
             </div>
           </div>
         </div>
-
-        {/* Looking for Teammates Section */}
-        {user && (
-          <div className="mb-8">
-            <ProfileLookingForTeammatesSection 
-              targetUserId={user.id} 
-              isOwnProfile={true} 
-            />
-          </div>
-        )}
 
         {/* Tabs for different sections */}
         <Tabs defaultValue="teams" className="animate-fade-in">
