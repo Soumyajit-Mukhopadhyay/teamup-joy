@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { useAuth } from '@/contexts/AuthContext';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from 'sonner';
-import { Check, X, Users, Bell, UserPlus, Sparkles, UserCheck } from 'lucide-react';
+import { Check, X, Users, Bell, UserPlus, Sparkles, UserCheck, CheckCheck, Trash2 } from 'lucide-react';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { format } from 'date-fns';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -318,6 +318,34 @@ const Notifications = () => {
     setNotifications(prev => prev.filter(n => n.id !== notifId));
   };
 
+  const markAllNotificationsRead = async () => {
+    const unreadIds = notifications.filter(n => !n.is_read).map(n => n.id);
+    if (unreadIds.length === 0) return;
+    await supabase.from('notifications').update({ is_read: true }).in('id', unreadIds);
+    setNotifications(prev => prev.map(n => ({ ...n, is_read: true })));
+    toast.success('All updates marked as read');
+  };
+
+  const clearAllNotifications = async () => {
+    if (notifications.length === 0) return;
+    await supabase.from('notifications').delete().eq('user_id', user!.id);
+    setNotifications([]);
+    toast.success('All updates cleared');
+  };
+
+  const markAllTeamInvitesRead = async () => {
+    // Accept/decline handles removal, so just clear them all by declining
+    toast.info('Use accept/decline to handle invites');
+  };
+
+  const markAllJoinRequestsRead = async () => {
+    toast.info('Use accept/decline to handle join requests');
+  };
+
+  const markAllFriendRequestsRead = async () => {
+    toast.info('Use accept/decline to handle friend requests');
+  };
+
   const totalPending = teamInvites.length + joinRequests.length + friendRequests.length + notifications.filter(n => !n.is_read).length;
 
   return (
@@ -378,6 +406,13 @@ const Notifications = () => {
 
             {/* Team Invites - Someone invited YOU to join their team */}
             <TabsContent value="invites">
+              {teamInvites.length > 0 && (
+                <div className="flex justify-end mb-3">
+                  <Button size="sm" variant="outline" onClick={markAllTeamInvitesRead}>
+                    <CheckCheck className="h-4 w-4 mr-1" /> Handle All
+                  </Button>
+                </div>
+              )}
               {teamInvites.length === 0 ? (
                 <div className="glass-card p-8 text-center">
                   <Users className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
@@ -428,6 +463,13 @@ const Notifications = () => {
 
             {/* Join Requests - Someone wants to join YOUR team */}
             <TabsContent value="joinrequests">
+              {joinRequests.length > 0 && (
+                <div className="flex justify-end mb-3">
+                  <Button size="sm" variant="outline" onClick={markAllJoinRequestsRead}>
+                    <CheckCheck className="h-4 w-4 mr-1" /> Handle All
+                  </Button>
+                </div>
+              )}
               {joinRequests.length === 0 ? (
                 <div className="glass-card p-8 text-center">
                   <UserCheck className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
@@ -477,6 +519,13 @@ const Notifications = () => {
             </TabsContent>
 
             <TabsContent value="friend">
+              {friendRequests.length > 0 && (
+                <div className="flex justify-end mb-3">
+                  <Button size="sm" variant="outline" onClick={markAllFriendRequestsRead}>
+                    <CheckCheck className="h-4 w-4 mr-1" /> Handle All
+                  </Button>
+                </div>
+              )}
               {friendRequests.length === 0 ? (
                 <div className="glass-card p-8 text-center">
                   <UserPlus className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />
@@ -526,6 +575,16 @@ const Notifications = () => {
             </TabsContent>
 
             <TabsContent value="general">
+              {notifications.length > 0 && (
+                <div className="flex justify-end mb-3 gap-2">
+                  <Button size="sm" variant="outline" onClick={markAllNotificationsRead}>
+                    <CheckCheck className="h-4 w-4 mr-1" /> Read All
+                  </Button>
+                  <Button size="sm" variant="outline" onClick={clearAllNotifications} className="text-destructive hover:text-destructive">
+                    <Trash2 className="h-4 w-4 mr-1" /> Clear All
+                  </Button>
+                </div>
+              )}
               {notifications.length === 0 ? (
                 <div className="glass-card p-8 text-center">
                   <Sparkles className="h-12 w-12 mx-auto mb-4 text-muted-foreground/50" />

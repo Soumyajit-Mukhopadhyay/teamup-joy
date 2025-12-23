@@ -4489,16 +4489,20 @@ HACKATHON PAGES:
 
 USER & SOCIAL:
 - /friends - **FRIENDS PAGE** - View friends list, search users, send/manage friend requests, view sent requests
-- /friend-chat/:friendId - Direct message chat with a specific friend
+- /chat/:friendId - Direct message chat with a specific friend
 - /profile - Current user's profile settings
-- /user/:userId - View another user's public profile
-- /notifications - View all notifications (friend requests, team invites, etc.)
+- /user/:userid - View another user's public profile by their @userid
+- /notifications - View all notifications (friend requests, team invites, join requests, updates)
+
+AUTH:
+- /auth - Login and signup page
+- /auth/reset - Password reset page
 
 TEAMS:
 - /teams - View all teams the user is part of
-- /teams/:hackathonId/create - Create a new team for a hackathon
-- /teams/:teamId/manage - Manage team settings, members (leader only)
-- /teams/:teamId/chat - Team group chat
+- /hackathon/:hackathonId/team - Create a new team for a hackathon
+- /team/:teamId/manage - Manage team settings, members (leader only)
+- /team/:teamId/chat - Team group chat
 - /team/:teamId/details - View team details, members, send friend requests
 
 FIND TEAMMATES:
