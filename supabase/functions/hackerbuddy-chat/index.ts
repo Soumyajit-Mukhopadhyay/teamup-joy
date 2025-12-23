@@ -648,6 +648,32 @@ const tools = [
   {
     type: "function",
     function: {
+      name: "admin_instant_train",
+      description: "ADMIN ONLY: Instantly train/upgrade the AI with new logic. Use when admin says things like 'add this logic to your model', 'train yourself with this', 'upgrade yourself with this example', 'learn this pattern', 'adapt to this workflow'. The AI will analyze the instruction, check for security concerns, and either apply immediately or ask for confirmation if potentially harmful.",
+      parameters: {
+        type: "object",
+        properties: {
+          training_instruction: { 
+            type: "string", 
+            description: "The natural language instruction describing what the AI should learn. Can be a pattern, rule, behavior, or example." 
+          },
+          force_apply: {
+            type: "boolean",
+            description: "If true, apply the training even if it triggers security warnings (only works after security warning was shown)"
+          },
+          priority: {
+            type: "string",
+            enum: ["low", "normal", "high", "critical"],
+            description: "Priority level for this training pattern. Critical patterns are always checked first."
+          },
+        },
+        required: ["training_instruction"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
       name: "resolve_impossible_task",
       description: "ADMIN ONLY: Mark an impossible task as resolved (capability added or determined not needed).",
       parameters: {
@@ -1521,6 +1547,246 @@ Use EXACT tool names from the list above.`;
     console.error("Workflow processing failed:", e);
     return { success: false, message: `Error: ${e instanceof Error ? e.message : 'Unknown'}` };
   }
+}
+
+// Security patterns for training instructions that need admin confirmation
+const SECURITY_RISK_PATTERNS = [
+  { pattern: /bypass.*security/i, risk: "high", description: "Bypassing security measures" },
+  { pattern: /ignore.*rls|disable.*rls/i, risk: "high", description: "Disabling Row Level Security" },
+  { pattern: /all.*users|everyone|public.*access/i, risk: "medium", description: "Broad access changes" },
+  { pattern: /delete.*all|remove.*all|drop/i, risk: "high", description: "Mass deletion patterns" },
+  { pattern: /admin.*override|skip.*check|no.*confirmation/i, risk: "high", description: "Skipping safety checks" },
+  { pattern: /access.*other.*user|impersonate/i, risk: "critical", description: "Accessing other users' data" },
+  { pattern: /sql.*inject|execute.*raw/i, risk: "critical", description: "SQL injection patterns" },
+  { pattern: /expose.*secret|show.*password|reveal.*key/i, risk: "critical", description: "Exposing sensitive data" },
+  { pattern: /auto.*approve|always.*accept/i, risk: "medium", description: "Automatic approval without review" },
+  { pattern: /trust.*all|skip.*validation/i, risk: "high", description: "Skipping validation" },
+];
+
+// Analyze training instruction for security risks
+function analyzeTrainingSecurityRisks(instruction: string): { 
+  hasRisks: boolean; 
+  riskLevel: "low" | "medium" | "high" | "critical"; 
+  risks: string[];
+  requiresConfirmation: boolean;
+} {
+  const foundRisks: { risk: string; description: string }[] = [];
+  let maxRiskLevel: "low" | "medium" | "high" | "critical" = "low";
+  
+  const riskPriority = { low: 0, medium: 1, high: 2, critical: 3 };
+  
+  for (const { pattern, risk, description } of SECURITY_RISK_PATTERNS) {
+    if (pattern.test(instruction)) {
+      foundRisks.push({ risk, description });
+      if (riskPriority[risk as keyof typeof riskPriority] > riskPriority[maxRiskLevel]) {
+        maxRiskLevel = risk as typeof maxRiskLevel;
+      }
+    }
+  }
+  
+  return {
+    hasRisks: foundRisks.length > 0,
+    riskLevel: maxRiskLevel,
+    risks: foundRisks.map(r => `⚠️ ${r.description} (${r.risk} risk)`),
+    requiresConfirmation: maxRiskLevel !== "low",
+  };
+}
+
+// Process admin instant training with security analysis
+async function processAdminInstantTraining(
+  instruction: string,
+  forceApply: boolean,
+  priority: string,
+  supabase: any,
+  apiKey: string
+): Promise<{ 
+  success: boolean; 
+  message: string; 
+  requiresConfirmation?: boolean;
+  securityWarning?: string;
+  appliedPattern?: any;
+}> {
+  
+  // Step 1: Analyze for security risks
+  const securityAnalysis = analyzeTrainingSecurityRisks(instruction);
+  
+  // Step 2: If risks found and not force-applying, ask for confirmation
+  if (securityAnalysis.hasRisks && !forceApply) {
+    const warningMessage = `🛡️ **SECURITY ANALYSIS**
+
+I've detected potential security concerns in this training instruction:
+
+${securityAnalysis.risks.join('\n')}
+
+**Risk Level:** ${securityAnalysis.riskLevel.toUpperCase()}
+
+This instruction could potentially:
+${securityAnalysis.riskLevel === 'critical' ? '❌ Compromise system security or expose sensitive data' : ''}
+${securityAnalysis.riskLevel === 'high' ? '⚠️ Bypass important safety checks' : ''}
+${securityAnalysis.riskLevel === 'medium' ? '⚡ Affect multiple users or reduce security controls' : ''}
+
+**As an admin, you can still apply this training by confirming.**
+Say "yes, apply anyway" or "force apply" to proceed despite security warnings.`;
+
+    return {
+      success: false,
+      message: warningMessage,
+      requiresConfirmation: true,
+      securityWarning: securityAnalysis.riskLevel,
+    };
+  }
+
+  // Step 3: Use AI to analyze and generate the pattern
+  const analyzerPrompt = `You are an AI Training Pattern Generator. An admin wants to train the AI with this instruction:
+
+TRAINING INSTRUCTION: "${instruction}"
+
+${securityAnalysis.hasRisks ? `NOTE: Security risks were acknowledged by admin. Apply anyway.` : ''}
+
+Your knowledge of ALL available tools and capabilities:
+${Object.entries(TOOL_KNOWLEDGE_BASE).map(([name, data]) => 
+  `- ${data.tools.join(', ')}: ${data.description}`
+).join('\n')}
+
+ADDITIONAL BEHAVIORAL PATTERNS YOU CAN LEARN:
+- Response styles (be more concise, use emojis, etc.)
+- Custom workflows (when X happens, do Y then Z)
+- Domain-specific knowledge (hackathon terms, community rules)
+- User intent mappings (when user says X, they mean Y)
+- Error handling behaviors
+- Confirmation rules
+- Priority and ordering logic
+
+Generate a comprehensive training pattern in JSON:
+{
+  "pattern_type": "tool_sequence" | "behavior_rule" | "response_style" | "domain_knowledge" | "intent_mapping",
+  "pattern_name": "short_unique_name",
+  "trigger_keywords": ["keyword1", "keyword2"],
+  "tool_sequence": ["tool1", "tool2"] | null,
+  "behavior_rule": "Description of the behavioral rule" | null,
+  "example_triggers": ["example phrase 1", "example phrase 2"],
+  "expected_response": "What the AI should do/say",
+  "priority": "${priority || 'normal'}",
+  "applies_to": "all_users" | "admin_only" | "conditional"
+}
+
+Be comprehensive - extract ALL learnable patterns from the instruction.`;
+
+  try {
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash",
+        messages: [{ role: "user", content: analyzerPrompt }],
+        stream: false,
+      }),
+    });
+
+    if (!response.ok) {
+      return { success: false, message: "Failed to analyze training instruction" };
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) {
+      // Even if no structured pattern, store as a behavioral rule
+      const fallbackHash = `admin_rule_${Date.now()}`;
+      await supabase.from("ai_learned_patterns").insert({
+        pattern_hash: fallbackHash,
+        request_pattern: instruction,
+        tool_sequence: [],
+        example_request: instruction,
+        example_response: "Custom admin-defined behavior",
+        success_count: priority === 'critical' ? 100 : priority === 'high' ? 50 : 20,
+        failure_count: 0,
+      });
+      
+      return { 
+        success: true, 
+        message: `✅ **Training Applied** (as behavioral rule)\n\n📝 Instruction: "${instruction.slice(0, 100)}..."\n⚡ Priority: ${priority || 'normal'}\n\nI will now follow this instruction in future interactions.`,
+        appliedPattern: { pattern_hash: fallbackHash, type: 'behavioral_rule' }
+      };
+    }
+    
+    const pattern = JSON.parse(jsonMatch[0]);
+    
+    // Calculate success_count based on priority
+    const priorityScores = { critical: 100, high: 50, normal: 20, low: 10 };
+    const successScore = priorityScores[priority as keyof typeof priorityScores] || 20;
+    
+    // Generate unique pattern hash
+    const patternHash = pattern.pattern_name || `admin_train_${Date.now()}`;
+    
+    // Store the pattern with high priority
+    await supabase.from("ai_learned_patterns").upsert({
+      pattern_hash: patternHash,
+      request_pattern: pattern.behavior_rule || pattern.expected_response || instruction,
+      tool_sequence: pattern.tool_sequence || [],
+      example_request: pattern.example_triggers?.[0] || instruction,
+      example_response: pattern.expected_response || instruction,
+      success_count: successScore,
+      failure_count: 0,
+    }, { onConflict: 'pattern_hash' });
+    
+    // Build response message
+    let responseMsg = `✅ **Training Successfully Applied!**\n\n`;
+    responseMsg += `📋 **Pattern Name:** ${pattern.pattern_name}\n`;
+    responseMsg += `🏷️ **Type:** ${pattern.pattern_type}\n`;
+    responseMsg += `⚡ **Priority:** ${priority || 'normal'}\n`;
+    
+    if (pattern.tool_sequence?.length > 0) {
+      responseMsg += `🔧 **Tools:** ${pattern.tool_sequence.join(' → ')}\n`;
+    }
+    if (pattern.trigger_keywords?.length > 0) {
+      responseMsg += `🎯 **Triggers:** ${pattern.trigger_keywords.join(', ')}\n`;
+    }
+    if (pattern.behavior_rule) {
+      responseMsg += `📝 **Rule:** ${pattern.behavior_rule}\n`;
+    }
+    if (securityAnalysis.hasRisks) {
+      responseMsg += `\n⚠️ *Applied with security override by admin*`;
+    }
+    
+    responseMsg += `\n\n✨ I have learned this pattern and will apply it in future interactions!`;
+    
+    return { 
+      success: true, 
+      message: responseMsg,
+      appliedPattern: pattern
+    };
+    
+  } catch (e) {
+    console.error("Admin instant training failed:", e);
+    return { success: false, message: `Error: ${e instanceof Error ? e.message : 'Unknown'}` };
+  }
+}
+
+// Detect if a message is an admin training command
+function isAdminTrainingCommand(message: string): boolean {
+  const trainingTriggers = [
+    /add\s+(this\s+)?logic/i,
+    /train\s+yourself/i,
+    /upgrade\s+yourself/i,
+    /learn\s+(this|that|from)/i,
+    /adapt\s+(to|with)/i,
+    /update\s+your\s+(logic|model|behavior|pattern)/i,
+    /remember\s+(this|that|when)/i,
+    /from\s+now\s+on/i,
+    /new\s+rule/i,
+    /add\s+(a\s+)?pattern/i,
+    /teach\s+you/i,
+    /self[- ]train/i,
+    /improve\s+yourself/i,
+    /modify\s+your\s+behavior/i,
+  ];
+  
+  return trainingTriggers.some(trigger => trigger.test(message));
 }
 
 function checkGuardrails(userMessage: string): { blocked: boolean; reason?: string } {
@@ -4212,6 +4478,82 @@ async function executeToolCall(
       };
     }
 
+    case "admin_instant_train": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can use instant training. This attempt has been logged.",
+            message: "❌ Admin access required. Only admins can train the AI with new logic."
+          }
+        };
+      }
+
+      const { training_instruction, force_apply, priority } = args;
+      
+      if (!training_instruction) {
+        return {
+          result: {
+            success: false,
+            error: "Please provide the training instruction.",
+            message: "❌ Missing training instruction. Tell me what logic you want me to learn."
+          }
+        };
+      }
+
+      // Use the instant training processor with security analysis
+      const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+      if (!LOVABLE_API_KEY) {
+        return {
+          result: {
+            success: false,
+            error: "API key not configured",
+            message: "❌ Cannot process training - API key missing."
+          }
+        };
+      }
+
+      const trainingResult = await processAdminInstantTraining(
+        training_instruction,
+        force_apply || false,
+        priority || 'normal',
+        supabase,
+        LOVABLE_API_KEY
+      );
+
+      if (trainingResult.requiresConfirmation) {
+        // Security warning - needs confirmation
+        return {
+          result: {
+            success: false,
+            requires_confirmation: true,
+            security_warning: trainingResult.securityWarning,
+            message: trainingResult.message,
+            action_type: "admin_instant_train_pending"
+          },
+          needsConfirmation: true,
+          confirmationMessage: trainingResult.message
+        };
+      }
+
+      return {
+        result: {
+          success: trainingResult.success,
+          action_type: "admin_instant_train",
+          message: trainingResult.message,
+          applied_pattern: trainingResult.appliedPattern
+        }
+      };
+    }
+
     case "get_impossible_tasks": {
       // Check if user is admin
       const { data: adminRole } = await supabase
@@ -4760,10 +5102,47 @@ Example training command: "Train AI: when user says 'create teams X and Y for ha
   - example_request: "create teams X and Y for hackathon Z"
   - tool_sequence: ["create_team", "create_team"]
 
+═══════════════════════════════════════════════════════════════
+🚀 INSTANT SELF-TRAINING (ADMIN ONLY) - NEW!
+═══════════════════════════════════════════════════════════════
+
+Admins can INSTANTLY train you with natural language commands like:
+- "Add this logic to your model: when someone asks for X, do Y"
+- "Train yourself with this: always greet users by name"
+- "Upgrade yourself with this example: ..."
+- "Learn this pattern: when user says 'quick team', create team with default settings"
+- "From now on, always confirm before deleting anything"
+- "New rule: prioritize friends-only visibility for team lookups"
+
+When you detect these training commands from an ADMIN:
+1. Use admin_instant_train tool
+2. The system will analyze the instruction for security risks
+3. If LOW RISK → Apply immediately and confirm
+4. If MEDIUM/HIGH/CRITICAL RISK → Show security warning and ask for confirmation
+5. If admin confirms with "yes, apply anyway" or "force apply" → Apply with force_apply=true
+
+SECURITY ANALYSIS:
+The system checks for potentially harmful patterns like:
+- Bypassing security measures
+- Mass deletions
+- Accessing other users' data
+- Exposing secrets
+- Skipping confirmations
+
+Even if flagged as risky, an ADMIN can FORCE the training by confirming.
+This ensures admins have FULL CONTROL while being warned of potential risks.
+
+PRIORITY LEVELS:
+- critical: Always checked first, never auto-deleted
+- high: Prioritized in pattern matching
+- normal: Standard priority
+- low: May be auto-cleaned if unused
+
 The AI learns automatically from:
 - Every successful multi-task execution (priority learning)
 - Every successful single-task execution
 - Admin-provided examples (highest priority)
+- Admin instant training (highest priority + security reviewed)
 
 Low-quality patterns are automatically removed if they fail too often.`;
 
