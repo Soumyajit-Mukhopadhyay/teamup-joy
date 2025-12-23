@@ -196,11 +196,12 @@ const HackerBuddy = () => {
   const loadMessages = async () => {
     if (!user) return;
 
-    // Load the 100 most recent messages, ordered descending so we get newest first
+    // Load the 100 most recent NON-HIDDEN messages (soft delete)
     const { data, error } = await supabase
       .from('ai_chat_messages')
       .select('*')
       .eq('user_id', user.id)
+      .is('hidden_at', null)
       .order('created_at', { ascending: false })
       .limit(100);
 
@@ -263,9 +264,11 @@ const HackerBuddy = () => {
   const clearChat = async () => {
     if (!user) return;
 
+    // SOFT DELETE: Set hidden_at instead of deleting
+    // Use raw update to bypass type checking (hidden_at column added via migration)
     const { error } = await supabase
       .from('ai_chat_messages')
-      .delete()
+      .update({ hidden_at: new Date().toISOString() } as any)
       .eq('user_id', user.id);
 
     if (error) {
@@ -273,7 +276,7 @@ const HackerBuddy = () => {
       return;
     }
 
-    // Also clear conversation summary
+    // Also clear conversation summary (this can still be deleted as it's just a summary)
     await supabase
       .from('ai_conversation_summaries')
       .delete()

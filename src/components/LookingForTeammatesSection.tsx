@@ -192,6 +192,38 @@ const LookingForTeammatesSection = ({ hackathonSlug }: LookingForTeammatesSectio
     
     setLoading(true);
     fetchTeamsLookingForMembers();
+
+    // Subscribe to realtime updates
+    const channel = supabase
+      .channel(`looking-for-teammates-${hackathonSlug}`)
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'teams',
+          filter: `hackathon_id=eq.${hackathonSlug}`,
+        },
+        () => {
+          fetchTeamsLookingForMembers();
+        }
+      )
+      .on(
+        'postgres_changes',
+        {
+          event: '*',
+          schema: 'public',
+          table: 'team_requests',
+        },
+        () => {
+          fetchTeamsLookingForMembers();
+        }
+      )
+      .subscribe();
+
+    return () => {
+      supabase.removeChannel(channel);
+    };
   }, [user?.id, hackathonSlug, fetchTeamsLookingForMembers]);
 
   const requestToJoin = async (team: TeamLookingForMembers) => {
