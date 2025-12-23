@@ -185,6 +185,35 @@ const Friends = () => {
   const sendFriendRequest = async (toUserId: string) => {
     if (!user) return;
 
+    // Check if already friends
+    const { data: existingFriend } = await supabase
+      .from('friends')
+      .select('id')
+      .or(`and(user_id.eq.${user.id},friend_id.eq.${toUserId}),and(user_id.eq.${toUserId},friend_id.eq.${user.id})`)
+      .limit(1);
+
+    if (existingFriend && existingFriend.length > 0) {
+      toast.error('You are already friends with this user');
+      setSearchQuery('');
+      setSearchResults([]);
+      return;
+    }
+
+    // Check if request already exists (either direction)
+    const { data: existingRequest } = await supabase
+      .from('friend_requests')
+      .select('id, status')
+      .or(`and(from_user_id.eq.${user.id},to_user_id.eq.${toUserId}),and(from_user_id.eq.${toUserId},to_user_id.eq.${user.id})`)
+      .eq('status', 'pending')
+      .limit(1);
+
+    if (existingRequest && existingRequest.length > 0) {
+      toast.error('A friend request already exists');
+      setSearchQuery('');
+      setSearchResults([]);
+      return;
+    }
+
     const { error } = await supabase
       .from('friend_requests')
       .insert({
