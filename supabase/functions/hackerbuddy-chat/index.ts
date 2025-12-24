@@ -5277,72 +5277,261 @@ Low-quality patterns are automatically removed if they fail too often.`;
       );
     }
 
-    // Call AI with tools - with retry logic and Perplexity fallback
-    const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
+    // ═══════════════════════════════════════════════════════════════════════════════
+    // MULTI-PROVIDER AI SYSTEM WITH LOAD BALANCING & FAILOVER
+    // ═══════════════════════════════════════════════════════════════════════════════
     
-    const callAIWithRetry = async (body: any, maxRetries = 3): Promise<Response> => {
-      // Try Lovable AI first
-      for (let attempt = 0; attempt < maxRetries; attempt++) {
-        try {
-          const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+    // Get all Gemini API keys
+    const GEMINI_API_KEYS = [
+      Deno.env.get("GEMINI_API_KEY_1"),
+      Deno.env.get("GEMINI_API_KEY_2"),
+      Deno.env.get("GEMINI_API_KEY_3"),
+      Deno.env.get("GEMINI_API_KEY_4"),
+      Deno.env.get("GEMINI_API_KEY_5"),
+      Deno.env.get("GEMINI_API_KEY_6"),
+      Deno.env.get("GEMINI_API_KEY_7"),
+      Deno.env.get("GEMINI_API_KEY_8"),
+    ].filter(Boolean) as string[];
+    
+    const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
+    const TOTAL_PROVIDERS = GEMINI_API_KEYS.length;
+    
+    console.log(`Multi-provider system: ${TOTAL_PROVIDERS} Gemini keys available`);
+    
+    // Get user's assigned provider index from database
+    const getUserAssignedProvider = async (): Promise<number> => {
+      try {
+        const { data } = await supabase
+          .from("user_ai_providers")
+          .select("assigned_key_index")
+          .eq("user_id", user.id)
+          .maybeSingle();
+        
+        if (data?.assigned_key_index) {
+          return data.assigned_key_index;
+        }
+        
+        // If no assignment exists, create one randomly
+        const randomIndex = Math.floor(Math.random() * TOTAL_PROVIDERS) + 1;
+        await supabase.from("user_ai_providers").insert({
+          user_id: user.id,
+          assigned_key_index: randomIndex,
+        });
+        console.log(`Assigned new user ${user.id} to provider ${randomIndex}`);
+        return randomIndex;
+      } catch (e) {
+        console.error("Failed to get user provider assignment:", e);
+        // Fallback to random if db fails
+        return Math.floor(Math.random() * TOTAL_PROVIDERS) + 1;
+      }
+    };
+    
+    // Call Gemini API with a specific key
+    const callGeminiAPI = async (apiKey: string, body: any): Promise<Response | null> => {
+      try {
+        // Convert OpenAI-style request to Gemini format
+        const geminiMessages = body.messages.map((m: any) => ({
+          role: m.role === "assistant" ? "model" : m.role === "system" ? "user" : m.role,
+          parts: [{ text: m.content || "" }],
+        }));
+        
+        // Handle tool definitions for Gemini
+        let geminiBody: any = {
+          contents: geminiMessages,
+          generationConfig: {
+            temperature: 0.7,
+            maxOutputTokens: 8192,
+          },
+        };
+        
+        // Add tools if present
+        if (body.tools?.length) {
+          geminiBody.tools = [{
+            functionDeclarations: body.tools.map((t: any) => ({
+              name: t.function.name,
+              description: t.function.description,
+              parameters: t.function.parameters,
+            })),
+          }];
+        }
+        
+        const response = await fetch(
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+          {
             method: "POST",
-            headers: {
-              Authorization: `Bearer ${LOVABLE_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify(body),
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(geminiBody),
+          }
+        );
+        
+        if (response.ok) {
+          // Convert Gemini response to OpenAI format for compatibility
+          const geminiData = await response.json();
+          const candidate = geminiData.candidates?.[0];
+          
+          if (!candidate) {
+            console.error("No candidate in Gemini response");
+            return null;
+          }
+          
+          // Extract text content and function calls
+          const textPart = candidate.content?.parts?.find((p: any) => p.text);
+          const functionCallParts = candidate.content?.parts?.filter((p: any) => p.functionCall) || [];
+          
+          // Convert to OpenAI format
+          const openAIResponse: any = {
+            choices: [{
+              message: {
+                role: "assistant",
+                content: textPart?.text || null,
+              },
+              finish_reason: candidate.finishReason?.toLowerCase() || "stop",
+            }],
+          };
+          
+          // Add tool calls if present
+          if (functionCallParts.length > 0) {
+            openAIResponse.choices[0].message.tool_calls = functionCallParts.map((fc: any, idx: number) => ({
+              id: `call_${idx}_${Date.now()}`,
+              type: "function",
+              function: {
+                name: fc.functionCall.name,
+                arguments: JSON.stringify(fc.functionCall.args || {}),
+              },
+            }));
+          }
+          
+          // Return as a fake Response object with JSON
+          return new Response(JSON.stringify(openAIResponse), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
           });
-
-          if (response.ok) {
-            return response;
-          }
-
-          if (response.status === 429) {
-            const waitTime = Math.pow(2, attempt) * 1000 + Math.random() * 500;
-            console.log(`Lovable AI rate limited, retrying in ${waitTime}ms (attempt ${attempt + 1}/${maxRetries})`);
-            
-            if (attempt < maxRetries - 1) {
-              await new Promise(resolve => setTimeout(resolve, waitTime));
-              continue;
-            }
-          } else {
-            const errorText = await response.text();
-            console.error("Lovable AI error:", response.status, errorText);
-            break; // Try fallback
-          }
-        } catch (e) {
-          console.error("Lovable AI request failed:", e);
-          break; // Try fallback
+        }
+        
+        if (response.status === 429) {
+          console.log("Gemini API rate limited");
+          return null; // Signal to try next provider
+        }
+        
+        const errorText = await response.text();
+        console.error("Gemini API error:", response.status, errorText);
+        return null;
+      } catch (e) {
+        console.error("Gemini API request failed:", e);
+        return null;
+      }
+    };
+    
+    // Call Lovable AI (original method)
+    const callLovableAI = async (body: any): Promise<Response | null> => {
+      try {
+        const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${LOVABLE_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify(body),
+        });
+        
+        if (response.ok) {
+          return response;
+        }
+        
+        if (response.status === 429 || response.status === 402) {
+          console.log(`Lovable AI limit: ${response.status}`);
+          return null; // Signal to try next provider
+        }
+        
+        const errorText = await response.text();
+        console.error("Lovable AI error:", response.status, errorText);
+        return null;
+      } catch (e) {
+        console.error("Lovable AI request failed:", e);
+        return null;
+      }
+    };
+    
+    // Call Perplexity as final fallback (for non-tool-calling requests)
+    const callPerplexityAI = async (body: any): Promise<Response | null> => {
+      if (!PERPLEXITY_API_KEY || body.tools) {
+        return null; // Perplexity doesn't support tool calling
+      }
+      
+      try {
+        const response = await fetch("https://api.perplexity.ai/chat/completions", {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${PERPLEXITY_API_KEY}`,
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            model: "sonar",
+            messages: body.messages,
+            stream: body.stream || false,
+          }),
+        });
+        
+        if (response.ok) {
+          console.log("Perplexity fallback successful");
+          return response;
+        }
+        
+        console.error("Perplexity fallback failed:", response.status);
+        return null;
+      } catch (e) {
+        console.error("Perplexity request failed:", e);
+        return null;
+      }
+    };
+    
+    // Main AI call function with multi-provider failover
+    const callAIWithRetry = async (body: any): Promise<Response> => {
+      const startKeyIndex = await getUserAssignedProvider();
+      console.log(`User ${user.id} assigned to provider ${startKeyIndex}, starting failover chain...`);
+      
+      // Step 1: Try user's assigned Gemini provider first
+      if (TOTAL_PROVIDERS > 0 && startKeyIndex <= TOTAL_PROVIDERS) {
+        const primaryKey = GEMINI_API_KEYS[startKeyIndex - 1];
+        console.log(`Trying primary Gemini provider ${startKeyIndex}...`);
+        
+        const primaryResponse = await callGeminiAPI(primaryKey, body);
+        if (primaryResponse) {
+          console.log(`Primary Gemini provider ${startKeyIndex} succeeded`);
+          return primaryResponse;
         }
       }
-
-      // Fallback to Perplexity for non-tool-calling requests
-      if (PERPLEXITY_API_KEY && !body.tools) {
-        console.log("Falling back to Perplexity API...");
-        try {
-          const perplexityResponse = await fetch("https://api.perplexity.ai/chat/completions", {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${PERPLEXITY_API_KEY}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model: "sonar",
-              messages: body.messages,
-              stream: body.stream || false,
-            }),
-          });
-
-          if (perplexityResponse.ok) {
-            console.log("Perplexity fallback successful");
-            return perplexityResponse;
-          }
-          console.error("Perplexity fallback failed:", perplexityResponse.status);
-        } catch (e) {
-          console.error("Perplexity request failed:", e);
+      
+      // Step 2: Try other Gemini providers in round-robin order
+      for (let offset = 1; offset < TOTAL_PROVIDERS; offset++) {
+        const keyIndex = ((startKeyIndex - 1 + offset) % TOTAL_PROVIDERS);
+        const apiKey = GEMINI_API_KEYS[keyIndex];
+        
+        console.log(`Trying Gemini provider ${keyIndex + 1}...`);
+        const response = await callGeminiAPI(apiKey, body);
+        if (response) {
+          console.log(`Gemini provider ${keyIndex + 1} succeeded`);
+          return response;
         }
       }
-
+      
+      // Step 3: Try Lovable AI as fallback
+      console.log("All Gemini providers exhausted, trying Lovable AI...");
+      const lovableResponse = await callLovableAI(body);
+      if (lovableResponse) {
+        console.log("Lovable AI fallback succeeded");
+        return lovableResponse;
+      }
+      
+      // Step 4: Try Perplexity as final fallback (only for non-tool requests)
+      console.log("Trying Perplexity as final fallback...");
+      const perplexityResponse = await callPerplexityAI(body);
+      if (perplexityResponse) {
+        return perplexityResponse;
+      }
+      
+      // All providers failed
+      console.error("All AI providers exhausted!");
       throw new Error("RATE_LIMITED");
     };
 
@@ -5512,8 +5701,109 @@ Low-quality patterns are automatically removed if they fail too often.`;
 
     // No tool calls - stream or return directly
     if (stream) {
+      // Try streaming with multi-provider fallback
+      const startKeyIndex = await getUserAssignedProvider();
+      
+      // Helper to try Gemini streaming
+      const tryGeminiStreaming = async (apiKey: string): Promise<Response | null> => {
+        try {
+          const geminiMessages = messages.map((m: any) => ({
+            role: m.role === "assistant" ? "model" : m.role === "system" ? "user" : m.role,
+            parts: [{ text: m.content || "" }],
+          }));
+          
+          const response = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:streamGenerateContent?key=${apiKey}&alt=sse`,
+            {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                contents: geminiMessages,
+                generationConfig: { temperature: 0.7, maxOutputTokens: 8192 },
+              }),
+            }
+          );
+          
+          if (response.ok && response.body) {
+            // Transform Gemini SSE format to OpenAI format
+            const transformedStream = new ReadableStream({
+              async start(controller) {
+                const reader = response.body!.getReader();
+                const decoder = new TextDecoder();
+                
+                while (true) {
+                  const { done, value } = await reader.read();
+                  if (done) break;
+                  
+                  const chunk = decoder.decode(value, { stream: true });
+                  const lines = chunk.split('\n');
+                  
+                  for (const line of lines) {
+                    if (line.startsWith('data: ')) {
+                      try {
+                        const data = JSON.parse(line.slice(6));
+                        const text = data.candidates?.[0]?.content?.parts?.[0]?.text;
+                        if (text) {
+                          // Convert to OpenAI SSE format
+                          const openAIChunk = {
+                            choices: [{ delta: { content: text }, finish_reason: null }],
+                          };
+                          controller.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(openAIChunk)}\n\n`));
+                        }
+                      } catch (e) {
+                        // Ignore parse errors in streaming
+                      }
+                    }
+                  }
+                }
+                
+                controller.enqueue(new TextEncoder().encode('data: [DONE]\n\n'));
+                controller.close();
+              },
+            });
+            
+            return new Response(transformedStream, {
+              headers: { ...corsHeaders, "Content-Type": "text/event-stream" },
+            });
+          }
+          
+          if (response.status === 429) {
+            console.log("Gemini streaming rate limited");
+            return null;
+          }
+          
+          return null;
+        } catch (e) {
+          console.error("Gemini streaming failed:", e);
+          return null;
+        }
+      };
+      
+      // Try user's assigned Gemini provider first for streaming
+      if (TOTAL_PROVIDERS > 0 && startKeyIndex <= TOTAL_PROVIDERS) {
+        const streamResp = await tryGeminiStreaming(GEMINI_API_KEYS[startKeyIndex - 1]);
+        if (streamResp) {
+          if (shouldUpdateSummary) {
+            updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
+          }
+          return streamResp;
+        }
+      }
+      
+      // Try other Gemini providers
+      for (let offset = 1; offset < TOTAL_PROVIDERS; offset++) {
+        const keyIndex = ((startKeyIndex - 1 + offset) % TOTAL_PROVIDERS);
+        const streamResp = await tryGeminiStreaming(GEMINI_API_KEYS[keyIndex]);
+        if (streamResp) {
+          if (shouldUpdateSummary) {
+            updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
+          }
+          return streamResp;
+        }
+      }
+      
+      // Fallback to Lovable AI for streaming
       try {
-        // Make a new streaming request
         const streamResponse = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
           method: "POST",
           headers: {
@@ -5532,7 +5822,6 @@ Low-quality patterns are automatically removed if they fail too often.`;
           console.error("Streaming failed:", streamResponse.status, errorText);
           // Fall through to non-streaming response
         } else if (streamResponse.body) {
-          // Update summary in background
           if (shouldUpdateSummary) {
             updateConversationSummary(supabase, user.id, recentHistory, LOVABLE_API_KEY);
           }
