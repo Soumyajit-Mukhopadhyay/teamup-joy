@@ -5279,9 +5279,26 @@ Low-quality patterns are automatically removed if they fail too often.`;
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // MULTI-PROVIDER AI SYSTEM WITH LOAD BALANCING, FAILOVER & COOLDOWN TRACKING
+    // Priority Order: Hugging Face → Groq → Perplexity → Lovable AI → Gemini
     // ═══════════════════════════════════════════════════════════════════════════════
     
-    // Get all Gemini API keys
+    // Get all Hugging Face API keys (PRIMARY - highest priority)
+    const HUGGINGFACE_API_KEYS = [
+      Deno.env.get("HUGGINGFACE_API_KEY_1"),
+      Deno.env.get("HUGGINGFACE_API_KEY_2"),
+      Deno.env.get("HUGGINGFACE_API_KEY_3"),
+    ].filter(Boolean) as string[];
+    
+    // Get all Groq API keys (SECONDARY)
+    const GROQ_API_KEYS = [
+      Deno.env.get("GROQ_API_KEY_1"),
+      Deno.env.get("GROQ_API_KEY_2"),
+      Deno.env.get("GROQ_API_KEY_3"),
+      Deno.env.get("GROQ_API_KEY_4"),
+      Deno.env.get("GROQ_API_KEY_5"),
+    ].filter(Boolean) as string[];
+    
+    // Get all Gemini API keys (LAST RESORT)
     const GEMINI_API_KEYS = [
       Deno.env.get("GEMINI_API_KEY_1"),
       Deno.env.get("GEMINI_API_KEY_2"),
@@ -5294,34 +5311,45 @@ Low-quality patterns are automatically removed if they fail too often.`;
     ].filter(Boolean) as string[];
     
     const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
-    const TOTAL_PROVIDERS = GEMINI_API_KEYS.length;
+    
+    // Total providers for assignment (HF + Groq + Gemini)
+    const TOTAL_HF = HUGGINGFACE_API_KEYS.length;
+    const TOTAL_GROQ = GROQ_API_KEYS.length;
+    const TOTAL_GEMINI = GEMINI_API_KEYS.length;
+    const TOTAL_PROVIDERS = TOTAL_HF + TOTAL_GROQ + TOTAL_GEMINI;
+    
+    console.log(`Multi-provider system: ${TOTAL_HF} HF, ${TOTAL_GROQ} Groq, ${TOTAL_GEMINI} Gemini keys available`);
     
     // Cooldown tracking - skip keys that failed in last 60 seconds
     // Persisted in the runtime (warm instances) so we don't re-probe all keys on every request.
     const COOLDOWN_DURATION_MS = 60_000; // 60 seconds
-    const keyCooldowns: Map<number, number> =
-      ((globalThis as any).__geminiKeyCooldowns ??= new Map<number, number>());
+    const keyCooldowns: Map<string, number> =
+      ((globalThis as any).__providerKeyCooldowns ??= new Map<string, number>());
     
-    // Check if a key is in cooldown
-    const isKeyInCooldown = (keyIndex: number): boolean => {
-      const cooldownUntil = keyCooldowns.get(keyIndex);
+    // Check if a key is in cooldown (using provider:index format)
+    const isKeyInCooldown = (provider: string, keyIndex: number): boolean => {
+      const key = `${provider}:${keyIndex}`;
+      const cooldownUntil = keyCooldowns.get(key);
       if (!cooldownUntil) return false;
       if (Date.now() >= cooldownUntil) {
-        keyCooldowns.delete(keyIndex);
+        keyCooldowns.delete(key);
         return false;
       }
       return true;
     };
     
     // Mark a key as rate limited (put in cooldown)
-    const markKeyRateLimited = (keyIndex: number): void => {
-      keyCooldowns.set(keyIndex, Date.now() + COOLDOWN_DURATION_MS);
-      console.log(`Key ${keyIndex + 1} in cooldown for 60s`);
+    const markKeyRateLimited = (provider: string, keyIndex: number): void => {
+      const key = `${provider}:${keyIndex}`;
+      keyCooldowns.set(key, Date.now() + COOLDOWN_DURATION_MS);
+      console.log(`${provider} Key ${keyIndex + 1} in cooldown for 60s`);
     };
     
-    console.log(`Multi-provider system: ${TOTAL_PROVIDERS} Gemini keys available`);
-    
     // Get user's assigned provider index from database
+    // Returns a number 1-N where:
+    // 1-3: Hugging Face keys
+    // 4-8: Groq keys
+    // 9-16: Gemini keys
     const getUserAssignedProvider = async (): Promise<number> => {
       try {
         const { data } = await supabase
@@ -5334,8 +5362,12 @@ Low-quality patterns are automatically removed if they fail too often.`;
           return data.assigned_key_index;
         }
         
-        // If no assignment exists, create one randomly
-        const randomIndex = Math.floor(Math.random() * TOTAL_PROVIDERS) + 1;
+        // If no assignment exists, assign to HF or Groq first (1-8)
+        const primaryPoolSize = TOTAL_HF + TOTAL_GROQ;
+        const randomIndex = primaryPoolSize > 0 
+          ? Math.floor(Math.random() * primaryPoolSize) + 1
+          : Math.floor(Math.random() * TOTAL_GEMINI) + 1;
+        
         await supabase.from("user_ai_providers").insert({
           user_id: user.id,
           assigned_key_index: randomIndex,
@@ -5344,12 +5376,107 @@ Low-quality patterns are automatically removed if they fail too often.`;
         return randomIndex;
       } catch (e) {
         console.error("Failed to get user provider assignment:", e);
-        // Fallback to random if db fails
-        return Math.floor(Math.random() * TOTAL_PROVIDERS) + 1;
+        // Fallback to first HF/Groq key if db fails
+        return 1;
       }
     };
     
-    // Call Gemini API with a specific key
+    // Call Hugging Face Inference API
+    const callHuggingFaceAPI = async (apiKey: string, keyIndex: number, body: any): Promise<Response | null> => {
+      try {
+        // Use a capable chat model on HF - Mixtral is fast and good
+        const hfMessages = body.messages.map((m: any) => ({
+          role: m.role === "system" ? "system" : m.role === "assistant" ? "assistant" : "user",
+          content: m.content || "",
+        }));
+        
+        const response = await fetch(
+          "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1/v1/chat/completions",
+          {
+            method: "POST",
+            headers: { 
+              "Authorization": `Bearer ${apiKey}`,
+              "Content-Type": "application/json" 
+            },
+            body: JSON.stringify({
+              model: "mistralai/Mixtral-8x7B-Instruct-v0.1",
+              messages: hfMessages,
+              max_tokens: 4096,
+              stream: false,
+            }),
+          }
+        );
+        
+        if (response.ok) {
+          console.log(`HuggingFace provider ${keyIndex + 1} succeeded`);
+          return response;
+        }
+        
+        if (response.status === 429 || response.status === 503) {
+          console.log("HuggingFace API rate limited or unavailable");
+          markKeyRateLimited("hf", keyIndex);
+          return null;
+        }
+        
+        const errorText = await response.text();
+        console.error("HuggingFace API error:", response.status, errorText);
+        return null;
+      } catch (e) {
+        console.error("HuggingFace API request failed:", e);
+        return null;
+      }
+    };
+    
+    // Call Groq API
+    const callGroqAPI = async (apiKey: string, keyIndex: number, body: any): Promise<Response | null> => {
+      try {
+        // Groq format is OpenAI-compatible
+        const groqBody: any = {
+          model: "llama-3.1-70b-versatile", // Fast and capable
+          messages: body.messages,
+          max_tokens: 4096,
+          stream: false,
+        };
+        
+        // Add tools if present (Groq supports tool calling)
+        if (body.tools?.length) {
+          groqBody.tools = body.tools;
+          groqBody.tool_choice = "auto";
+        }
+        
+        const response = await fetch(
+          "https://api.groq.com/openai/v1/chat/completions",
+          {
+            method: "POST",
+            headers: { 
+              "Authorization": `Bearer ${apiKey}`,
+              "Content-Type": "application/json" 
+            },
+            body: JSON.stringify(groqBody),
+          }
+        );
+        
+        if (response.ok) {
+          console.log(`Groq provider ${keyIndex + 1} succeeded`);
+          return response;
+        }
+        
+        if (response.status === 429) {
+          console.log("Groq API rate limited");
+          markKeyRateLimited("groq", keyIndex);
+          return null;
+        }
+        
+        const errorText = await response.text();
+        console.error("Groq API error:", response.status, errorText);
+        return null;
+      } catch (e) {
+        console.error("Groq API request failed:", e);
+        return null;
+      }
+    };
+    
+    // Call Gemini API with a specific key (using lighter model for more requests)
     const callGeminiAPI = async (apiKey: string, keyIndex: number, body: any): Promise<Response | null> => {
       try {
         // Convert OpenAI-style request to Gemini format
@@ -5363,7 +5490,7 @@ Low-quality patterns are automatically removed if they fail too often.`;
           contents: geminiMessages,
           generationConfig: {
             temperature: 0.7,
-            maxOutputTokens: 8192,
+            maxOutputTokens: 4096,
           },
         };
         
@@ -5378,8 +5505,9 @@ Low-quality patterns are automatically removed if they fail too often.`;
           }];
         }
         
+        // Use gemini-1.5-flash for higher rate limits
         const response = await fetch(
-          `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent?key=${apiKey}`,
+          `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`,
           {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -5433,8 +5561,8 @@ Low-quality patterns are automatically removed if they fail too often.`;
         
         if (response.status === 429) {
           console.log("Gemini API rate limited");
-          markKeyRateLimited(keyIndex); // Add to cooldown
-          return null; // Signal to try next provider
+          markKeyRateLimited("gemini", keyIndex);
+          return null;
         }
         
         const errorText = await response.text();
@@ -5446,7 +5574,7 @@ Low-quality patterns are automatically removed if they fail too often.`;
       }
     };
     
-    // Call Lovable AI (original method)
+    // Call Lovable AI
     const callLovableAI = async (body: any): Promise<Response | null> => {
       try {
         const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
@@ -5459,12 +5587,13 @@ Low-quality patterns are automatically removed if they fail too often.`;
         });
         
         if (response.ok) {
+          console.log("Lovable AI succeeded");
           return response;
         }
         
         if (response.status === 429 || response.status === 402) {
           console.log(`Lovable AI limit: ${response.status}`);
-          return null; // Signal to try next provider
+          return null;
         }
         
         const errorText = await response.text();
@@ -5476,7 +5605,7 @@ Low-quality patterns are automatically removed if they fail too often.`;
       }
     };
     
-    // Call Perplexity as final fallback (for non-tool-calling requests)
+    // Call Perplexity (for non-tool-calling requests)
     const callPerplexityAI = async (body: any): Promise<Response | null> => {
       if (!PERPLEXITY_API_KEY) {
         console.log("Perplexity API key not available");
@@ -5500,11 +5629,11 @@ Low-quality patterns are automatically removed if they fail too often.`;
         });
         
         if (response.ok) {
-          console.log("Perplexity fallback succeeded");
+          console.log("Perplexity succeeded");
           return response;
         }
         
-        console.error("Perplexity fallback failed:", response.status);
+        console.error("Perplexity failed:", response.status);
         return null;
       } catch (e) {
         console.error("Perplexity request failed:", e);
@@ -5512,67 +5641,56 @@ Low-quality patterns are automatically removed if they fail too often.`;
       }
     };
     
-    // Main AI call function with multi-provider failover & cooldown skip
+    // Main AI call function with multi-provider failover
+    // Priority: Hugging Face → Groq → Perplexity → Lovable AI → Gemini
     const callAIWithRetry = async (body: any): Promise<Response> => {
-      const startKeyIndex = await getUserAssignedProvider();
-      console.log(`User ${user.id} assigned to provider ${startKeyIndex}, starting failover chain...`);
+      const assignedIndex = await getUserAssignedProvider();
+      console.log(`User ${user.id} assigned to provider index ${assignedIndex}, starting failover chain...`);
       
-      // Count keys NOT in cooldown
-      let availableKeys = 0;
-      for (let i = 0; i < TOTAL_PROVIDERS; i++) {
-        if (!isKeyInCooldown(i)) availableKeys++;
-      }
-      console.log(`${availableKeys}/${TOTAL_PROVIDERS} Gemini keys available (not in cooldown)`);
-      
-      // Step 1: Try user's assigned Gemini provider first (if not in cooldown)
-      if (TOTAL_PROVIDERS > 0 && startKeyIndex <= TOTAL_PROVIDERS) {
-        const keyIndex = startKeyIndex - 1;
-        if (!isKeyInCooldown(keyIndex)) {
-          const primaryKey = GEMINI_API_KEYS[keyIndex];
-          console.log(`Trying primary Gemini provider ${startKeyIndex}...`);
-          
-          const primaryResponse = await callGeminiAPI(primaryKey, keyIndex, body);
-          if (primaryResponse) {
-            console.log(`Primary Gemini provider ${startKeyIndex} succeeded`);
-            return primaryResponse;
-          }
-        } else {
-          console.log(`Primary provider ${startKeyIndex} is in cooldown, skipping`);
-        }
-      }
-      
-      // Step 2: Try other Gemini providers in round-robin order (skip cooldown keys)
-      for (let offset = 1; offset < TOTAL_PROVIDERS; offset++) {
-        const keyIndex = ((startKeyIndex - 1 + offset) % TOTAL_PROVIDERS);
-        
-        // Skip if in cooldown
-        if (isKeyInCooldown(keyIndex)) {
-          console.log(`Skipping provider ${keyIndex + 1} (in cooldown)`);
+      // STEP 1: Try all Hugging Face keys
+      console.log(`Trying ${TOTAL_HF} HuggingFace providers...`);
+      for (let i = 0; i < TOTAL_HF; i++) {
+        if (isKeyInCooldown("hf", i)) {
+          console.log(`HF provider ${i + 1} in cooldown, skipping`);
           continue;
         }
-        
-        const apiKey = GEMINI_API_KEYS[keyIndex];
-        console.log(`Trying Gemini provider ${keyIndex + 1}...`);
-        const response = await callGeminiAPI(apiKey, keyIndex, body);
+        const response = await callHuggingFaceAPI(HUGGINGFACE_API_KEYS[i], i, body);
+        if (response) return response;
+      }
+      
+      // STEP 2: Try all Groq keys
+      console.log(`Trying ${TOTAL_GROQ} Groq providers...`);
+      for (let i = 0; i < TOTAL_GROQ; i++) {
+        if (isKeyInCooldown("groq", i)) {
+          console.log(`Groq provider ${i + 1} in cooldown, skipping`);
+          continue;
+        }
+        const response = await callGroqAPI(GROQ_API_KEYS[i], i, body);
+        if (response) return response;
+      }
+      
+      // STEP 3: Try Perplexity
+      console.log("Trying Perplexity...");
+      const perplexityResponse = await callPerplexityAI(body);
+      if (perplexityResponse) return perplexityResponse;
+      
+      // STEP 4: Try Lovable AI
+      console.log("Trying Lovable AI...");
+      const lovableResponse = await callLovableAI(body);
+      if (lovableResponse) return lovableResponse;
+      
+      // STEP 5: Try all Gemini keys (last resort, using lighter model)
+      console.log(`Trying ${TOTAL_GEMINI} Gemini providers as last resort...`);
+      for (let i = 0; i < TOTAL_GEMINI; i++) {
+        if (isKeyInCooldown("gemini", i)) {
+          console.log(`Gemini provider ${i + 1} in cooldown, skipping`);
+          continue;
+        }
+        const response = await callGeminiAPI(GEMINI_API_KEYS[i], i, body);
         if (response) {
-          console.log(`Gemini provider ${keyIndex + 1} succeeded`);
+          console.log(`Gemini provider ${i + 1} succeeded`);
           return response;
         }
-      }
-      
-      // Step 3: Try Lovable AI as fallback
-      console.log("All Gemini providers exhausted/in-cooldown, trying Lovable AI...");
-      const lovableResponse = await callLovableAI(body);
-      if (lovableResponse) {
-        console.log("Lovable AI fallback succeeded");
-        return lovableResponse;
-      }
-      
-      // Step 4: Try Perplexity as final fallback
-      console.log("Trying Perplexity as final fallback...");
-      const perplexityResponse = await callPerplexityAI(body);
-      if (perplexityResponse) {
-        return perplexityResponse;
       }
       
       // All providers failed
