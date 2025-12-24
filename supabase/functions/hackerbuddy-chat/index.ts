@@ -5391,7 +5391,7 @@ Low-quality patterns are automatically removed if they fail too often.`;
         }));
         
         const response = await fetch(
-          "https://api-inference.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1/v1/chat/completions",
+          "https://router.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1/v1/chat/completions",
           {
             method: "POST",
             headers: { 
@@ -5432,7 +5432,7 @@ Low-quality patterns are automatically removed if they fail too often.`;
       try {
         // Groq format is OpenAI-compatible
         const groqBody: any = {
-          model: "llama-3.1-70b-versatile", // Fast and capable
+          model: "llama-3.3-70b-versatile", // Updated model - fast and capable
           messages: body.messages,
           max_tokens: 4096,
           stream: false,
