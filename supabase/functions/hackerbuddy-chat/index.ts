@@ -5381,17 +5381,18 @@ Low-quality patterns are automatically removed if they fail too often.`;
       }
     };
     
-    // Call Hugging Face Inference API
+    // Call Hugging Face Inference API (via Serverless Inference)
     const callHuggingFaceAPI = async (apiKey: string, keyIndex: number, body: any): Promise<Response | null> => {
       try {
-        // Use a capable chat model on HF - Mixtral is fast and good
+        // Use HF Inference API - OpenAI-compatible endpoint
         const hfMessages = body.messages.map((m: any) => ({
           role: m.role === "system" ? "system" : m.role === "assistant" ? "assistant" : "user",
           content: m.content || "",
         }));
         
+        // Use the HF Inference Providers API with a fast model
         const response = await fetch(
-          "https://router.huggingface.co/models/mistralai/Mixtral-8x7B-Instruct-v0.1/v1/chat/completions",
+          "https://router.huggingface.co/hf-inference/models/meta-llama/Llama-3.2-3B-Instruct/v1/chat/completions",
           {
             method: "POST",
             headers: { 
@@ -5399,9 +5400,8 @@ Low-quality patterns are automatically removed if they fail too often.`;
               "Content-Type": "application/json" 
             },
             body: JSON.stringify({
-              model: "mistralai/Mixtral-8x7B-Instruct-v0.1",
               messages: hfMessages,
-              max_tokens: 4096,
+              max_tokens: 2048,
               stream: false,
             }),
           }
