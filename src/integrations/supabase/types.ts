@@ -578,6 +578,30 @@ export type Database = {
         }
         Relationships: []
       }
+      user_ai_providers: {
+        Row: {
+          assigned_key_index: number
+          created_at: string
+          id: string
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          assigned_key_index: number
+          created_at?: string
+          id?: string
+          updated_at?: string
+          user_id: string
+        }
+        Update: {
+          assigned_key_index?: number
+          created_at?: string
+          id?: string
+          updated_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       user_roles: {
         Row: {
           created_at: string
