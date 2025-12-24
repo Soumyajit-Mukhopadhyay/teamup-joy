@@ -5279,13 +5279,20 @@ Low-quality patterns are automatically removed if they fail too often.`;
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // MULTI-PROVIDER AI SYSTEM WITH LOAD BALANCING, FAILOVER & COOLDOWN TRACKING
-    // Priority Order: OpenRouter → Groq → Perplexity → Lovable AI → Gemini
+    // Priority Order: OpenRouter (5 keys) → Perplexity → Lovable AI → Groq → Gemini
+    // New users are assigned to one of 5 OpenRouter keys for load distribution
     // ═══════════════════════════════════════════════════════════════════════════════
     
-    // OpenRouter API key (NEW TOP PRIORITY - supports all models with tool calling)
-    const OPENROUTER_API_KEY = Deno.env.get("OPENROUTER_API_KEY");
+    // OpenRouter API keys (TOP PRIORITY - 5 keys with load distribution)
+    const OPENROUTER_API_KEYS = [
+      Deno.env.get("OPENROUTER_API_KEY"),    // Original key
+      Deno.env.get("OPENROUTER_API_KEY_2"),
+      Deno.env.get("OPENROUTER_API_KEY_3"),
+      Deno.env.get("OPENROUTER_API_KEY_4"),
+      Deno.env.get("OPENROUTER_API_KEY_5"),
+    ].filter(Boolean) as string[];
     
-    // Get all Groq API keys (fast & supports tool calling)
+    // Get all Groq API keys (fallback after Lovable AI)
     const GROQ_API_KEYS = [
       Deno.env.get("GROQ_API_KEY_1"),
       Deno.env.get("GROQ_API_KEY_2"),
@@ -5308,12 +5315,13 @@ Low-quality patterns are automatically removed if they fail too often.`;
     
     const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
     
-    // Total providers for assignment (Groq + Gemini)
+    // Total providers for user assignment (OpenRouter is primary now)
+    const TOTAL_OPENROUTER = OPENROUTER_API_KEYS.length;
     const TOTAL_GROQ = GROQ_API_KEYS.length;
     const TOTAL_GEMINI = GEMINI_API_KEYS.length;
-    const TOTAL_PROVIDERS = TOTAL_GROQ + TOTAL_GEMINI;
+    const TOTAL_PROVIDERS = TOTAL_OPENROUTER; // Users are assigned to OpenRouter keys
     
-    console.log(`Multi-provider system: OpenRouter=${!!OPENROUTER_API_KEY}, ${TOTAL_GROQ} Groq, ${TOTAL_GEMINI} Gemini keys available`);
+    console.log(`Multi-provider system: ${TOTAL_OPENROUTER} OpenRouter, Perplexity=${!!PERPLEXITY_API_KEY}, ${TOTAL_GROQ} Groq, ${TOTAL_GEMINI} Gemini keys available`);
     
     // Cooldown tracking - skip keys that failed in last 60 seconds
     // Persisted in the runtime (warm instances) so we don't re-probe all keys on every request.
@@ -5340,11 +5348,9 @@ Low-quality patterns are automatically removed if they fail too often.`;
       console.log(`${provider} Key ${keyIndex + 1} in cooldown for 60s`);
     };
     
-    // Get user's assigned provider index from database
-    // Returns a number 1-N where:
-    // 1-5: Groq keys
-    // 6-13: Gemini keys
-    const getUserAssignedProvider = async (): Promise<number> => {
+    // Get user's assigned OpenRouter key index from database
+    // Returns a number 1-5 (one of the 5 OpenRouter keys for load distribution)
+    const getUserAssignedOpenRouterIndex = async (): Promise<number> => {
       try {
         const { data } = await supabase
           .from("user_ai_providers")
@@ -5353,24 +5359,23 @@ Low-quality patterns are automatically removed if they fail too often.`;
           .maybeSingle();
         
         if (data?.assigned_key_index) {
-          return data.assigned_key_index;
+          // Map to OpenRouter index (1-5)
+          const orIndex = ((data.assigned_key_index - 1) % TOTAL_OPENROUTER) + 1;
+          return orIndex;
         }
         
-        // If no assignment exists, assign to Groq first (1-5)
-        const randomIndex = TOTAL_GROQ > 0 
-          ? Math.floor(Math.random() * TOTAL_GROQ) + 1
-          : Math.floor(Math.random() * TOTAL_GEMINI) + 1;
-        
+        // Assign new user to one of the 5 OpenRouter keys (1-5) for load distribution
+        const newIndex = Math.floor(Math.random() * TOTAL_OPENROUTER) + 1;
         await supabase.from("user_ai_providers").insert({
           user_id: user.id,
-          assigned_key_index: randomIndex,
+          assigned_key_index: newIndex,
         });
-        console.log(`Assigned new user ${user.id} to provider ${randomIndex}`);
-        return randomIndex;
+        console.log(`Assigned new user ${user.id} to OpenRouter key ${newIndex}`);
+        return newIndex;
       } catch (e) {
         console.error("Failed to get user provider assignment:", e);
-        // Fallback to first Groq key if db fails
-        return 1;
+        // Fallback to random OpenRouter key
+        return Math.floor(Math.random() * TOTAL_OPENROUTER) + 1;
       }
     };
     
@@ -5552,10 +5557,10 @@ Low-quality patterns are automatically removed if they fail too often.`;
       }
     };
     
-    // Call OpenRouter API (NEW TOP PRIORITY - supports many models with tool calling)
-    const callOpenRouterAPI = async (body: any): Promise<Response | null> => {
-      if (!OPENROUTER_API_KEY) {
-        console.log("OpenRouter API key not available");
+    // Call OpenRouter API (TOP PRIORITY - 5 keys with load distribution and full tool calling)
+    const callOpenRouterAPI = async (apiKey: string, keyIndex: number, body: any): Promise<Response | null> => {
+      if (!apiKey) {
+        console.log(`OpenRouter API key ${keyIndex + 1} not available`);
         return null;
       }
       
@@ -5579,7 +5584,7 @@ Low-quality patterns are automatically removed if they fail too often.`;
           {
             method: "POST",
             headers: { 
-              "Authorization": `Bearer ${OPENROUTER_API_KEY}`,
+              "Authorization": `Bearer ${apiKey}`,
               "Content-Type": "application/json",
               "HTTP-Referer": "https://hackerbuddy.lovable.app",
               "X-Title": "HackerBuddy"
@@ -5589,26 +5594,27 @@ Low-quality patterns are automatically removed if they fail too often.`;
         );
         
         if (response.ok) {
-          console.log("OpenRouter succeeded");
+          console.log(`OpenRouter key ${keyIndex + 1} succeeded`);
           return response;
         }
         
         if (response.status === 429) {
-          console.log("OpenRouter rate limited");
-          markKeyRateLimited("openrouter", 0);
+          console.log(`OpenRouter key ${keyIndex + 1} rate limited`);
+          markKeyRateLimited("openrouter", keyIndex);
           return null;
         }
         
         if (response.status === 402) {
-          console.log("OpenRouter out of credits");
+          console.log(`OpenRouter key ${keyIndex + 1} out of credits`);
+          markKeyRateLimited("openrouter", keyIndex);
           return null;
         }
         
         const errorText = await response.text();
-        console.error("OpenRouter API error:", response.status, errorText);
+        console.error(`OpenRouter key ${keyIndex + 1} API error:`, response.status, errorText);
         return null;
       } catch (e) {
-        console.error("OpenRouter API request failed:", e);
+        console.error(`OpenRouter key ${keyIndex + 1} request failed:`, e);
         return null;
       }
     };
@@ -5650,19 +5656,39 @@ Low-quality patterns are automatically removed if they fail too often.`;
     };
     
     // Main AI call function with multi-provider failover
-    // Priority: OpenRouter → Groq → Perplexity → Lovable AI → Gemini
+    // Priority: OpenRouter (5 keys) → Perplexity → Lovable AI → Groq → Gemini
     const callAIWithRetry = async (body: any): Promise<Response> => {
-      const assignedIndex = await getUserAssignedProvider();
-      console.log(`User ${user.id} assigned to provider index ${assignedIndex}, starting failover chain...`);
+      const assignedOpenRouterIdx = await getUserAssignedOpenRouterIndex();
+      console.log(`User ${user.id} assigned to OpenRouter key ${assignedOpenRouterIdx}, starting failover chain...`);
       
-      // STEP 0: Try OpenRouter first (TOP PRIORITY - best tool calling support)
-      if (OPENROUTER_API_KEY && !isKeyInCooldown("openrouter", 0)) {
-        console.log("Trying OpenRouter (top priority)...");
-        const openRouterResponse = await callOpenRouterAPI(body);
-        if (openRouterResponse) return openRouterResponse;
+      // STEP 0: Try all OpenRouter keys (TOP PRIORITY - best tool calling support)
+      // Start with user's assigned key, then try others
+      console.log(`Trying ${TOTAL_OPENROUTER} OpenRouter providers (starting from key ${assignedOpenRouterIdx})...`);
+      for (let offset = 0; offset < TOTAL_OPENROUTER; offset++) {
+        const keyIndex = (assignedOpenRouterIdx - 1 + offset) % TOTAL_OPENROUTER;
+        if (isKeyInCooldown("openrouter", keyIndex)) {
+          console.log(`OpenRouter key ${keyIndex + 1} in cooldown, skipping`);
+          continue;
+        }
+        const apiKey = OPENROUTER_API_KEYS[keyIndex];
+        if (apiKey) {
+          console.log(`Trying OpenRouter key ${keyIndex + 1}...`);
+          const response = await callOpenRouterAPI(apiKey, keyIndex, body);
+          if (response) return response;
+        }
       }
       
-      // STEP 1: Try all Groq keys (fast with tool calling)
+      // STEP 1: Try Perplexity (good for web search queries)
+      console.log("Trying Perplexity...");
+      const perplexityResponse = await callPerplexityAI(body);
+      if (perplexityResponse) return perplexityResponse;
+      
+      // STEP 2: Try Lovable AI
+      console.log("Trying Lovable AI...");
+      const lovableResponse = await callLovableAI(body);
+      if (lovableResponse) return lovableResponse;
+      
+      // STEP 3: Try all Groq keys (fallback)
       console.log(`Trying ${TOTAL_GROQ} Groq providers...`);
       for (let i = 0; i < TOTAL_GROQ; i++) {
         if (isKeyInCooldown("groq", i)) {
@@ -5672,16 +5698,6 @@ Low-quality patterns are automatically removed if they fail too often.`;
         const response = await callGroqAPI(GROQ_API_KEYS[i], i, body);
         if (response) return response;
       }
-      
-      // STEP 2: Try Perplexity (good for web search queries)
-      console.log("Trying Perplexity...");
-      const perplexityResponse = await callPerplexityAI(body);
-      if (perplexityResponse) return perplexityResponse;
-      
-      // STEP 3: Try Lovable AI
-      console.log("Trying Lovable AI...");
-      const lovableResponse = await callLovableAI(body);
-      if (lovableResponse) return lovableResponse;
       
       // STEP 4: Try all Gemini keys (last resort)
       console.log(`Trying ${TOTAL_GEMINI} Gemini providers as last resort...`);
@@ -5869,7 +5885,7 @@ Low-quality patterns are automatically removed if they fail too often.`;
     // No tool calls - stream or return directly
     if (stream) {
       // Try streaming with multi-provider fallback
-      const startKeyIndex = await getUserAssignedProvider();
+      const startKeyIndex = await getUserAssignedOpenRouterIndex();
       
       // Helper to try Gemini streaming
       const tryGeminiStreaming = async (apiKey: string): Promise<Response | null> => {
