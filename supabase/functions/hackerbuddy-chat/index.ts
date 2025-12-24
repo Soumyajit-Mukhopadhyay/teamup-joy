@@ -5279,17 +5279,10 @@ Low-quality patterns are automatically removed if they fail too often.`;
 
     // ═══════════════════════════════════════════════════════════════════════════════
     // MULTI-PROVIDER AI SYSTEM WITH LOAD BALANCING, FAILOVER & COOLDOWN TRACKING
-    // Priority Order: Hugging Face → Groq → Perplexity → Lovable AI → Gemini
+    // Priority Order: Groq → Perplexity → Lovable AI → Gemini
     // ═══════════════════════════════════════════════════════════════════════════════
     
-    // Get all Hugging Face API keys (PRIMARY - highest priority)
-    const HUGGINGFACE_API_KEYS = [
-      Deno.env.get("HUGGINGFACE_API_KEY_1"),
-      Deno.env.get("HUGGINGFACE_API_KEY_2"),
-      Deno.env.get("HUGGINGFACE_API_KEY_3"),
-    ].filter(Boolean) as string[];
-    
-    // Get all Groq API keys (SECONDARY)
+    // Get all Groq API keys (PRIMARY - highest priority, fast & supports tool calling)
     const GROQ_API_KEYS = [
       Deno.env.get("GROQ_API_KEY_1"),
       Deno.env.get("GROQ_API_KEY_2"),
@@ -5312,13 +5305,12 @@ Low-quality patterns are automatically removed if they fail too often.`;
     
     const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
     
-    // Total providers for assignment (HF + Groq + Gemini)
-    const TOTAL_HF = HUGGINGFACE_API_KEYS.length;
+    // Total providers for assignment (Groq + Gemini)
     const TOTAL_GROQ = GROQ_API_KEYS.length;
     const TOTAL_GEMINI = GEMINI_API_KEYS.length;
-    const TOTAL_PROVIDERS = TOTAL_HF + TOTAL_GROQ + TOTAL_GEMINI;
+    const TOTAL_PROVIDERS = TOTAL_GROQ + TOTAL_GEMINI;
     
-    console.log(`Multi-provider system: ${TOTAL_HF} HF, ${TOTAL_GROQ} Groq, ${TOTAL_GEMINI} Gemini keys available`);
+    console.log(`Multi-provider system: ${TOTAL_GROQ} Groq, ${TOTAL_GEMINI} Gemini keys available`);
     
     // Cooldown tracking - skip keys that failed in last 60 seconds
     // Persisted in the runtime (warm instances) so we don't re-probe all keys on every request.
@@ -5347,9 +5339,8 @@ Low-quality patterns are automatically removed if they fail too often.`;
     
     // Get user's assigned provider index from database
     // Returns a number 1-N where:
-    // 1-3: Hugging Face keys
-    // 4-8: Groq keys
-    // 9-16: Gemini keys
+    // 1-5: Groq keys
+    // 6-13: Gemini keys
     const getUserAssignedProvider = async (): Promise<number> => {
       try {
         const { data } = await supabase
@@ -5362,10 +5353,9 @@ Low-quality patterns are automatically removed if they fail too often.`;
           return data.assigned_key_index;
         }
         
-        // If no assignment exists, assign to HF or Groq first (1-8)
-        const primaryPoolSize = TOTAL_HF + TOTAL_GROQ;
-        const randomIndex = primaryPoolSize > 0 
-          ? Math.floor(Math.random() * primaryPoolSize) + 1
+        // If no assignment exists, assign to Groq first (1-5)
+        const randomIndex = TOTAL_GROQ > 0 
+          ? Math.floor(Math.random() * TOTAL_GROQ) + 1
           : Math.floor(Math.random() * TOTAL_GEMINI) + 1;
         
         await supabase.from("user_ai_providers").insert({
@@ -5376,58 +5366,12 @@ Low-quality patterns are automatically removed if they fail too often.`;
         return randomIndex;
       } catch (e) {
         console.error("Failed to get user provider assignment:", e);
-        // Fallback to first HF/Groq key if db fails
+        // Fallback to first Groq key if db fails
         return 1;
       }
     };
     
-    // Call Hugging Face Inference API (via Serverless Inference)
-    const callHuggingFaceAPI = async (apiKey: string, keyIndex: number, body: any): Promise<Response | null> => {
-      try {
-        // Use HF Inference API - OpenAI-compatible endpoint
-        const hfMessages = body.messages.map((m: any) => ({
-          role: m.role === "system" ? "system" : m.role === "assistant" ? "assistant" : "user",
-          content: m.content || "",
-        }));
-        
-        // Use the HF Inference Providers API with a fast model
-        const response = await fetch(
-          "https://router.huggingface.co/hf-inference/models/meta-llama/Llama-3.2-3B-Instruct/v1/chat/completions",
-          {
-            method: "POST",
-            headers: { 
-              "Authorization": `Bearer ${apiKey}`,
-              "Content-Type": "application/json" 
-            },
-            body: JSON.stringify({
-              messages: hfMessages,
-              max_tokens: 2048,
-              stream: false,
-            }),
-          }
-        );
-        
-        if (response.ok) {
-          console.log(`HuggingFace provider ${keyIndex + 1} succeeded`);
-          return response;
-        }
-        
-        if (response.status === 429 || response.status === 503) {
-          console.log("HuggingFace API rate limited or unavailable");
-          markKeyRateLimited("hf", keyIndex);
-          return null;
-        }
-        
-        const errorText = await response.text();
-        console.error("HuggingFace API error:", response.status, errorText);
-        return null;
-      } catch (e) {
-        console.error("HuggingFace API request failed:", e);
-        return null;
-      }
-    };
-    
-    // Call Groq API
+    // Call Groq API (PRIMARY - fast with tool calling support)
     const callGroqAPI = async (apiKey: string, keyIndex: number, body: any): Promise<Response | null> => {
       try {
         // Groq format is OpenAI-compatible
@@ -5642,23 +5586,12 @@ Low-quality patterns are automatically removed if they fail too often.`;
     };
     
     // Main AI call function with multi-provider failover
-    // Priority: Hugging Face → Groq → Perplexity → Lovable AI → Gemini
+    // Priority: Groq → Perplexity → Lovable AI → Gemini
     const callAIWithRetry = async (body: any): Promise<Response> => {
       const assignedIndex = await getUserAssignedProvider();
       console.log(`User ${user.id} assigned to provider index ${assignedIndex}, starting failover chain...`);
       
-      // STEP 1: Try all Hugging Face keys
-      console.log(`Trying ${TOTAL_HF} HuggingFace providers...`);
-      for (let i = 0; i < TOTAL_HF; i++) {
-        if (isKeyInCooldown("hf", i)) {
-          console.log(`HF provider ${i + 1} in cooldown, skipping`);
-          continue;
-        }
-        const response = await callHuggingFaceAPI(HUGGINGFACE_API_KEYS[i], i, body);
-        if (response) return response;
-      }
-      
-      // STEP 2: Try all Groq keys
+      // STEP 1: Try all Groq keys (PRIMARY - fast with tool calling)
       console.log(`Trying ${TOTAL_GROQ} Groq providers...`);
       for (let i = 0; i < TOTAL_GROQ; i++) {
         if (isKeyInCooldown("groq", i)) {
@@ -5669,17 +5602,17 @@ Low-quality patterns are automatically removed if they fail too often.`;
         if (response) return response;
       }
       
-      // STEP 3: Try Perplexity
+      // STEP 2: Try Perplexity (good for web search queries)
       console.log("Trying Perplexity...");
       const perplexityResponse = await callPerplexityAI(body);
       if (perplexityResponse) return perplexityResponse;
       
-      // STEP 4: Try Lovable AI
+      // STEP 3: Try Lovable AI
       console.log("Trying Lovable AI...");
       const lovableResponse = await callLovableAI(body);
       if (lovableResponse) return lovableResponse;
       
-      // STEP 5: Try all Gemini keys (last resort, using lighter model)
+      // STEP 4: Try all Gemini keys (last resort)
       console.log(`Trying ${TOTAL_GEMINI} Gemini providers as last resort...`);
       for (let i = 0; i < TOTAL_GEMINI; i++) {
         if (isKeyInCooldown("gemini", i)) {
