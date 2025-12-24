@@ -5278,7 +5278,7 @@ Low-quality patterns are automatically removed if they fail too often.`;
     }
 
     // ═══════════════════════════════════════════════════════════════════════════════
-    // MULTI-PROVIDER AI SYSTEM WITH LOAD BALANCING & FAILOVER
+    // MULTI-PROVIDER AI SYSTEM WITH LOAD BALANCING, FAILOVER & COOLDOWN TRACKING
     // ═══════════════════════════════════════════════════════════════════════════════
     
     // Get all Gemini API keys
@@ -5295,6 +5295,27 @@ Low-quality patterns are automatically removed if they fail too often.`;
     
     const PERPLEXITY_API_KEY = Deno.env.get("PERPLEXITY_API_KEY");
     const TOTAL_PROVIDERS = GEMINI_API_KEYS.length;
+    
+    // Cooldown tracking - skip keys that failed in last 60 seconds
+    const COOLDOWN_DURATION_MS = 60000; // 60 seconds
+    const keyCooldowns: Map<number, number> = new Map();
+    
+    // Check if a key is in cooldown
+    const isKeyInCooldown = (keyIndex: number): boolean => {
+      const cooldownUntil = keyCooldowns.get(keyIndex);
+      if (!cooldownUntil) return false;
+      if (Date.now() >= cooldownUntil) {
+        keyCooldowns.delete(keyIndex);
+        return false;
+      }
+      return true;
+    };
+    
+    // Mark a key as rate limited (put in cooldown)
+    const markKeyRateLimited = (keyIndex: number): void => {
+      keyCooldowns.set(keyIndex, Date.now() + COOLDOWN_DURATION_MS);
+      console.log(`Key ${keyIndex + 1} in cooldown for 60s`);
+    };
     
     console.log(`Multi-provider system: ${TOTAL_PROVIDERS} Gemini keys available`);
     
@@ -5327,7 +5348,7 @@ Low-quality patterns are automatically removed if they fail too often.`;
     };
     
     // Call Gemini API with a specific key
-    const callGeminiAPI = async (apiKey: string, body: any): Promise<Response | null> => {
+    const callGeminiAPI = async (apiKey: string, keyIndex: number, body: any): Promise<Response | null> => {
       try {
         // Convert OpenAI-style request to Gemini format
         const geminiMessages = body.messages.map((m: any) => ({
@@ -5410,6 +5431,7 @@ Low-quality patterns are automatically removed if they fail too often.`;
         
         if (response.status === 429) {
           console.log("Gemini API rate limited");
+          markKeyRateLimited(keyIndex); // Add to cooldown
           return null; // Signal to try next provider
         }
         
@@ -5454,26 +5476,29 @@ Low-quality patterns are automatically removed if they fail too often.`;
     
     // Call Perplexity as final fallback (for non-tool-calling requests)
     const callPerplexityAI = async (body: any): Promise<Response | null> => {
-      if (!PERPLEXITY_API_KEY || body.tools) {
-        return null; // Perplexity doesn't support tool calling
+      if (!PERPLEXITY_API_KEY) {
+        console.log("Perplexity API key not available");
+        return null;
       }
       
       try {
+        // Perplexity doesn't support tool calling - strip tools from request
+        const perplexityBody: any = {
+          model: "sonar",
+          messages: body.messages,
+        };
+        
         const response = await fetch("https://api.perplexity.ai/chat/completions", {
           method: "POST",
           headers: {
             Authorization: `Bearer ${PERPLEXITY_API_KEY}`,
             "Content-Type": "application/json",
           },
-          body: JSON.stringify({
-            model: "sonar",
-            messages: body.messages,
-            stream: body.stream || false,
-          }),
+          body: JSON.stringify(perplexityBody),
         });
         
         if (response.ok) {
-          console.log("Perplexity fallback successful");
+          console.log("Perplexity fallback succeeded");
           return response;
         }
         
@@ -5485,30 +5510,48 @@ Low-quality patterns are automatically removed if they fail too often.`;
       }
     };
     
-    // Main AI call function with multi-provider failover
+    // Main AI call function with multi-provider failover & cooldown skip
     const callAIWithRetry = async (body: any): Promise<Response> => {
       const startKeyIndex = await getUserAssignedProvider();
       console.log(`User ${user.id} assigned to provider ${startKeyIndex}, starting failover chain...`);
       
-      // Step 1: Try user's assigned Gemini provider first
+      // Count keys NOT in cooldown
+      let availableKeys = 0;
+      for (let i = 0; i < TOTAL_PROVIDERS; i++) {
+        if (!isKeyInCooldown(i)) availableKeys++;
+      }
+      console.log(`${availableKeys}/${TOTAL_PROVIDERS} Gemini keys available (not in cooldown)`);
+      
+      // Step 1: Try user's assigned Gemini provider first (if not in cooldown)
       if (TOTAL_PROVIDERS > 0 && startKeyIndex <= TOTAL_PROVIDERS) {
-        const primaryKey = GEMINI_API_KEYS[startKeyIndex - 1];
-        console.log(`Trying primary Gemini provider ${startKeyIndex}...`);
-        
-        const primaryResponse = await callGeminiAPI(primaryKey, body);
-        if (primaryResponse) {
-          console.log(`Primary Gemini provider ${startKeyIndex} succeeded`);
-          return primaryResponse;
+        const keyIndex = startKeyIndex - 1;
+        if (!isKeyInCooldown(keyIndex)) {
+          const primaryKey = GEMINI_API_KEYS[keyIndex];
+          console.log(`Trying primary Gemini provider ${startKeyIndex}...`);
+          
+          const primaryResponse = await callGeminiAPI(primaryKey, keyIndex, body);
+          if (primaryResponse) {
+            console.log(`Primary Gemini provider ${startKeyIndex} succeeded`);
+            return primaryResponse;
+          }
+        } else {
+          console.log(`Primary provider ${startKeyIndex} is in cooldown, skipping`);
         }
       }
       
-      // Step 2: Try other Gemini providers in round-robin order
+      // Step 2: Try other Gemini providers in round-robin order (skip cooldown keys)
       for (let offset = 1; offset < TOTAL_PROVIDERS; offset++) {
         const keyIndex = ((startKeyIndex - 1 + offset) % TOTAL_PROVIDERS);
-        const apiKey = GEMINI_API_KEYS[keyIndex];
         
+        // Skip if in cooldown
+        if (isKeyInCooldown(keyIndex)) {
+          console.log(`Skipping provider ${keyIndex + 1} (in cooldown)`);
+          continue;
+        }
+        
+        const apiKey = GEMINI_API_KEYS[keyIndex];
         console.log(`Trying Gemini provider ${keyIndex + 1}...`);
-        const response = await callGeminiAPI(apiKey, body);
+        const response = await callGeminiAPI(apiKey, keyIndex, body);
         if (response) {
           console.log(`Gemini provider ${keyIndex + 1} succeeded`);
           return response;
@@ -5516,14 +5559,14 @@ Low-quality patterns are automatically removed if they fail too often.`;
       }
       
       // Step 3: Try Lovable AI as fallback
-      console.log("All Gemini providers exhausted, trying Lovable AI...");
+      console.log("All Gemini providers exhausted/in-cooldown, trying Lovable AI...");
       const lovableResponse = await callLovableAI(body);
       if (lovableResponse) {
         console.log("Lovable AI fallback succeeded");
         return lovableResponse;
       }
       
-      // Step 4: Try Perplexity as final fallback (only for non-tool requests)
+      // Step 4: Try Perplexity as final fallback
       console.log("Trying Perplexity as final fallback...");
       const perplexityResponse = await callPerplexityAI(body);
       if (perplexityResponse) {
