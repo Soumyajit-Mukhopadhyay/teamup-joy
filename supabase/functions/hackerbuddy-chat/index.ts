@@ -5297,8 +5297,10 @@ Low-quality patterns are automatically removed if they fail too often.`;
     const TOTAL_PROVIDERS = GEMINI_API_KEYS.length;
     
     // Cooldown tracking - skip keys that failed in last 60 seconds
-    const COOLDOWN_DURATION_MS = 60000; // 60 seconds
-    const keyCooldowns: Map<number, number> = new Map();
+    // Persisted in the runtime (warm instances) so we don't re-probe all keys on every request.
+    const COOLDOWN_DURATION_MS = 60_000; // 60 seconds
+    const keyCooldowns: Map<number, number> =
+      ((globalThis as any).__geminiKeyCooldowns ??= new Map<number, number>());
     
     // Check if a key is in cooldown
     const isKeyInCooldown = (keyIndex: number): boolean => {
