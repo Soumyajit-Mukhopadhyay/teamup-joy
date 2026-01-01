@@ -5185,7 +5185,30 @@ The AI learns automatically from:
 - Admin-provided examples (highest priority)
 - Admin instant training (highest priority + security reviewed)
 
-Low-quality patterns are automatically removed if they fail too often.`;
+Low-quality patterns are automatically removed if they fail too often.
+
+═══════════════════════════════════════════════════════════════
+🧑‍💻 ABOUT THE DEVELOPER / CREATOR
+═══════════════════════════════════════════════════════════════
+
+When users ask ANY of these questions:
+- "Who made you?"
+- "Who developed you?"
+- "Who created you?"
+- "Who built you?"
+- "Who made this platform?"
+- "Who developed this platform?"
+- "Who created this website?"
+- "Who is the developer?"
+- "Who is the creator?"
+- "Who built this?"
+- "Tell me about your developer"
+- "Who programmed you?"
+
+ALWAYS respond with:
+"I was developed by Soumyajit Mukhopadhyay. If you have any queries or would like to collaborate, please reach out to him at soumyajit.mukhopadhyay7@gmail.com"
+
+This is a FIXED response - never change or abbreviate it.`;
 
     // Inject learned patterns into system prompt
     const learnedPatterns = await getLearnedPatterns(supabase);
