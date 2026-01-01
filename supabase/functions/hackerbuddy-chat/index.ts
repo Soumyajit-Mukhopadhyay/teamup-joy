@@ -692,6 +692,65 @@ const tools = [
       },
     },
   },
+  {
+    type: "function",
+    function: {
+      name: "suggest_ai_behavior",
+      description: "ALL USERS: Suggest a new behavior pattern for the AI. Safe suggestions are auto-applied, risky ones go to admin for review. Use when user says things like 'when I say X, you should do Y', 'learn this', 'remember to always do X', 'add this logic'.",
+      parameters: {
+        type: "object",
+        properties: {
+          suggestion: { 
+            type: "string", 
+            description: "Natural language description of the suggested behavior" 
+          },
+          example_trigger: { 
+            type: "string", 
+            description: "Optional: Example phrase that should trigger this behavior" 
+          },
+        },
+        required: ["suggestion"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "get_pending_suggestions",
+      description: "ADMIN ONLY: View pending user suggestions awaiting admin review.",
+      parameters: { type: "object", properties: {}, required: [] },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "approve_suggestion",
+      description: "ADMIN ONLY: Approve a pending user suggestion and apply it to AI training.",
+      parameters: {
+        type: "object",
+        properties: {
+          suggestion_id: { type: "string", description: "ID of the suggestion to approve" },
+          admin_notes: { type: "string", description: "Optional notes about the approval" },
+        },
+        required: ["suggestion_id"],
+      },
+    },
+  },
+  {
+    type: "function",
+    function: {
+      name: "deny_suggestion",
+      description: "ADMIN ONLY: Deny a pending user suggestion.",
+      parameters: {
+        type: "object",
+        properties: {
+          suggestion_id: { type: "string", description: "ID of the suggestion to deny" },
+          reason: { type: "string", description: "Reason for denial" },
+        },
+        required: ["suggestion_id", "reason"],
+      },
+    },
+  },
 ];
 
 // Guardrails - actions that require confirmation
@@ -4712,8 +4771,465 @@ async function executeToolCall(
       };
     }
 
+    case "suggest_ai_behavior": {
+      const { suggestion, example_trigger } = args;
+      
+      if (!suggestion) {
+        return {
+          result: {
+            success: false,
+            error: "Please provide your suggestion.",
+            message: "❌ Tell me what behavior you'd like me to learn."
+          }
+        };
+      }
+
+      // Safety analysis - check for harmful patterns
+      const HARMFUL_PATTERNS = [
+        { pattern: /bypass.*security/i, reason: "Attempts to bypass security" },
+        { pattern: /skip.*confirm/i, reason: "Attempts to skip confirmations" },
+        { pattern: /delete.*all/i, reason: "Mass deletion request" },
+        { pattern: /access.*other.*user/i, reason: "Cross-user data access" },
+        { pattern: /expose.*password/i, reason: "Credential exposure" },
+        { pattern: /ignore.*rls/i, reason: "Attempts to bypass RLS" },
+        { pattern: /admin.*without.*check/i, reason: "Admin privilege bypass" },
+        { pattern: /sql.*inject/i, reason: "SQL injection attempt" },
+        { pattern: /drop.*table/i, reason: "Database destruction" },
+        { pattern: /never.*ask.*confirm/i, reason: "Removes safety confirmations" },
+        { pattern: /always.*auto.*approve/i, reason: "Removes approval safeguards" },
+        { pattern: /hack|exploit|vulnerability/i, reason: "Security exploitation" },
+      ];
+
+      // Check for harmful patterns
+      for (const { pattern, reason } of HARMFUL_PATTERNS) {
+        if (pattern.test(suggestion)) {
+          console.log(`BLOCKED harmful suggestion from user ${userId}: ${reason}`);
+          
+          // Log the blocked attempt
+          await supabase.from("ai_pending_suggestions").insert({
+            user_id: userId,
+            suggestion_text: suggestion,
+            parsed_pattern: { example_trigger },
+            safety_analysis: { blocked: true, reason },
+            risk_level: "auto_denied",
+            status: "denied",
+            admin_notes: `Auto-denied: ${reason}`,
+          });
+
+          return {
+            result: {
+              success: false,
+              error: "This suggestion was blocked for safety reasons.",
+              message: `❌ **Suggestion Denied**\n\nYour suggestion was automatically blocked because it appears to: ${reason}.\n\nIf you believe this was a mistake, please contact an admin.`
+            }
+          };
+        }
+      }
+
+      // Safe pattern keywords - auto-approve if clearly safe
+      const SAFE_PATTERNS = [
+        /when.*ask.*show/i,
+        /when.*say.*provide/i,
+        /respond.*with/i,
+        /include.*in.*response/i,
+        /also.*mention/i,
+        /offer.*to.*help/i,
+        /suggest.*option/i,
+        /navigate.*to/i,
+        /open.*link/i,
+        /create.*team/i,
+        /enrol.*hackathon/i,
+      ];
+
+      const isClearlySafe = SAFE_PATTERNS.some(p => p.test(suggestion));
+      
+      // Get user profile for the notification
+      const { data: userProfile } = await supabase
+        .from("profiles")
+        .select("username, userid")
+        .eq("user_id", userId)
+        .single();
+
+      const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+      
+      if (isClearlySafe && LOVABLE_API_KEY) {
+        // Auto-apply safe suggestions
+        console.log(`Auto-applying safe suggestion from user ${userId}: ${suggestion.slice(0, 50)}...`);
+        
+        // Parse the suggestion into a pattern using AI
+        const parseResult = await parseUserSuggestionToPattern(suggestion, example_trigger || "", LOVABLE_API_KEY);
+        
+        if (parseResult.success && parseResult.pattern) {
+          // Save to ai_learned_patterns
+          await supabase.from("ai_learned_patterns").insert({
+            pattern_hash: parseResult.pattern.patternHash || `user_${Date.now()}`,
+            request_pattern: parseResult.pattern.triggerPhrase || suggestion.slice(0, 100),
+            tool_sequence: parseResult.pattern.toolSequence || [],
+            example_request: suggestion,
+            example_response: parseResult.pattern.expectedResponse || "",
+            success_count: 1,
+            failure_count: 0,
+          });
+
+          // Log the auto-applied suggestion
+          await supabase.from("ai_pending_suggestions").insert({
+            user_id: userId,
+            suggestion_text: suggestion,
+            parsed_pattern: parseResult.pattern,
+            safety_analysis: { auto_approved: true, reason: "Pattern matches safe keywords" },
+            risk_level: "auto_approved",
+            status: "auto_applied",
+          });
+
+          return {
+            result: {
+              success: true,
+              action_type: "suggest_ai_behavior",
+              message: `✅ **Suggestion Applied!**\n\nI've learned this new behavior:\n\n> "${suggestion.slice(0, 200)}${suggestion.length > 200 ? '...' : ''}"\n\nI'll start using this pattern right away. Thank you for helping me improve! 🎉`
+            }
+          };
+        }
+      }
+
+      // For uncertain suggestions, send to admin for review
+      console.log(`Sending suggestion to admin review from user ${userId}: ${suggestion.slice(0, 50)}...`);
+      
+      // Store in pending suggestions table
+      const { data: pendingSuggestion, error: insertError } = await supabase
+        .from("ai_pending_suggestions")
+        .insert({
+          user_id: userId,
+          suggestion_text: suggestion,
+          parsed_pattern: { example_trigger },
+          safety_analysis: { needs_review: true },
+          risk_level: "pending",
+          status: "pending",
+        })
+        .select()
+        .single();
+
+      if (insertError) {
+        console.error("Failed to save suggestion:", insertError);
+        return {
+          result: {
+            success: false,
+            error: "Failed to save your suggestion.",
+            message: "❌ Sorry, I couldn't save your suggestion. Please try again."
+          }
+        };
+      }
+
+      // Create admin notification
+      await supabase.from("admin_notifications").insert({
+        type: "ai_suggestion",
+        title: "New AI Training Suggestion",
+        message: `User ${userProfile?.username || 'Unknown'} (@${userProfile?.userid || 'unknown'}) suggested: "${suggestion.slice(0, 100)}${suggestion.length > 100 ? '...' : ''}"`,
+        reference_id: pendingSuggestion.id,
+        reference_type: "ai_suggestion",
+      });
+
+      return {
+        result: {
+          success: true,
+          action_type: "suggest_ai_behavior",
+          message: `📝 **Suggestion Submitted for Review**\n\nI've forwarded your suggestion to the admin:\n\n> "${suggestion.slice(0, 200)}${suggestion.length > 200 ? '...' : ''}"\n\nOnce approved, I'll learn this new behavior. Thank you for helping me improve! 🙏`
+        }
+      };
+    }
+
+    case "get_pending_suggestions": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can view pending suggestions.",
+            message: "❌ Admin access required."
+          }
+        };
+      }
+
+      const { data: suggestions } = await supabase
+        .from("ai_pending_suggestions")
+        .select(`
+          id,
+          suggestion_text,
+          parsed_pattern,
+          safety_analysis,
+          risk_level,
+          status,
+          created_at,
+          user_id
+        `)
+        .eq("status", "pending")
+        .order("created_at", { ascending: false })
+        .limit(20);
+
+      if (!suggestions?.length) {
+        return {
+          result: {
+            success: true,
+            message: "✅ No pending suggestions! All user feedback has been reviewed.",
+            suggestions: [],
+          }
+        };
+      }
+
+      // Get user profiles for the suggestions
+      const userIds = [...new Set(suggestions.map((s: any) => s.user_id))];
+      const { data: profiles } = await supabase
+        .from("profiles")
+        .select("user_id, username, userid")
+        .in("user_id", userIds);
+
+      const profileMap = new Map<string, { user_id: string; username: string; userid: string }>((profiles || []).map((p: any) => [p.user_id, p]));
+
+      const suggestionList = suggestions.map((s: any, i: number) => {
+        const profile = profileMap.get(s.user_id);
+        return `${i + 1}. **From:** ${profile?.username || 'Unknown'} (@${profile?.userid || 'unknown'})\n   **Suggestion:** ${s.suggestion_text.slice(0, 100)}${s.suggestion_text.length > 100 ? '...' : ''}\n   **ID:** \`${s.id}\``;
+      }).join("\n\n");
+
+      return {
+        result: {
+          success: true,
+          action_type: "get_pending_suggestions",
+          message: `📋 **Pending User Suggestions (${suggestions.length})**\n\n${suggestionList}\n\n**Actions:**\n- Use \`approve_suggestion\` with the ID to apply\n- Use \`deny_suggestion\` with the ID to reject`,
+          suggestions: suggestions.map((s: any) => ({
+            id: s.id,
+            suggestion: s.suggestion_text,
+            from_user: profileMap.get(s.user_id)?.username || 'Unknown',
+            created_at: s.created_at,
+          })),
+        }
+      };
+    }
+
+    case "approve_suggestion": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can approve suggestions.",
+            message: "❌ Admin access required."
+          }
+        };
+      }
+
+      const { suggestion_id, admin_notes } = args;
+      
+      if (!suggestion_id) {
+        return {
+          result: {
+            success: false,
+            error: "Please provide the suggestion ID.",
+            message: "❌ Missing suggestion ID."
+          }
+        };
+      }
+
+      // Get the suggestion
+      const { data: suggestion, error: fetchError } = await supabase
+        .from("ai_pending_suggestions")
+        .select("*")
+        .eq("id", suggestion_id)
+        .single();
+
+      if (fetchError || !suggestion) {
+        return {
+          result: {
+            success: false,
+            error: "Suggestion not found.",
+            message: "❌ Could not find that suggestion."
+          }
+        };
+      }
+
+      // Parse and apply the suggestion
+      const LOVABLE_API_KEY = Deno.env.get("LOVABLE_API_KEY");
+      if (LOVABLE_API_KEY) {
+        const parseResult = await parseUserSuggestionToPattern(
+          suggestion.suggestion_text, 
+          suggestion.parsed_pattern?.example_trigger || "", 
+          LOVABLE_API_KEY
+        );
+
+        if (parseResult.success && parseResult.pattern) {
+          // Save to ai_learned_patterns
+          await supabase.from("ai_learned_patterns").insert({
+            pattern_hash: parseResult.pattern.patternHash || `admin_${Date.now()}`,
+            request_pattern: parseResult.pattern.triggerPhrase || suggestion.suggestion_text.slice(0, 100),
+            tool_sequence: parseResult.pattern.toolSequence || [],
+            example_request: suggestion.suggestion_text,
+            example_response: parseResult.pattern.expectedResponse || "",
+            success_count: 2, // Give admin-approved patterns higher initial weight
+            failure_count: 0,
+          });
+        }
+      }
+
+      // Update the suggestion status
+      await supabase
+        .from("ai_pending_suggestions")
+        .update({
+          status: "approved",
+          reviewed_by: userId,
+          reviewed_at: new Date().toISOString(),
+          admin_notes: admin_notes || "Approved by admin",
+        })
+        .eq("id", suggestion_id);
+
+      return {
+        result: {
+          success: true,
+          action_type: "approve_suggestion",
+          message: `✅ **Suggestion Approved!**\n\n"${suggestion.suggestion_text.slice(0, 100)}${suggestion.suggestion_text.length > 100 ? '...' : ''}"\n\nThis pattern has been added to my learning. I'll use it going forward!`
+        }
+      };
+    }
+
+    case "deny_suggestion": {
+      // Check if user is admin
+      const { data: adminRole } = await supabase
+        .from("user_roles")
+        .select("role")
+        .eq("user_id", userId)
+        .eq("role", "admin")
+        .maybeSingle();
+
+      if (!adminRole) {
+        return {
+          result: {
+            success: false,
+            error: "Only admins can deny suggestions.",
+            message: "❌ Admin access required."
+          }
+        };
+      }
+
+      const { suggestion_id, reason } = args;
+      
+      if (!suggestion_id) {
+        return {
+          result: {
+            success: false,
+            error: "Please provide the suggestion ID.",
+            message: "❌ Missing suggestion ID."
+          }
+        };
+      }
+
+      // Update the suggestion status
+      const { data: suggestion, error } = await supabase
+        .from("ai_pending_suggestions")
+        .update({
+          status: "denied",
+          reviewed_by: userId,
+          reviewed_at: new Date().toISOString(),
+          admin_notes: reason || "Denied by admin",
+        })
+        .eq("id", suggestion_id)
+        .select()
+        .single();
+
+      if (error || !suggestion) {
+        return {
+          result: {
+            success: false,
+            error: "Suggestion not found.",
+            message: "❌ Could not find that suggestion."
+          }
+        };
+      }
+
+      return {
+        result: {
+          success: true,
+          action_type: "deny_suggestion",
+          message: `❌ **Suggestion Denied**\n\n"${suggestion.suggestion_text.slice(0, 100)}${suggestion.suggestion_text.length > 100 ? '...' : ''}"\n\n${reason ? `**Reason:** ${reason}` : ''}`
+        }
+      };
+    }
+
     default:
       return { result: { error: "Unknown action" } };
+  }
+}
+
+// Helper: Parse user suggestion into a trainable pattern
+async function parseUserSuggestionToPattern(
+  suggestion: string,
+  exampleTrigger: string,
+  apiKey: string
+): Promise<{ success: boolean; pattern?: any }> {
+  try {
+    const prompt = `You are an AI Training Pattern Parser. Parse this user suggestion into a structured learning pattern.
+
+USER SUGGESTION: "${suggestion}"
+${exampleTrigger ? `EXAMPLE TRIGGER PHRASE: "${exampleTrigger}"` : ''}
+
+AVAILABLE TOOLS (reference only):
+- navigate_to_page, search_hackathons, get_hackathon_link, visit_hackathon_website
+- get_hackathon_calendar_link, get_hackathon_share_link, submit_hackathon
+- create_team, leave_team, delete_team, invite_to_team, set_looking_for_teammates
+- send_friend_request, accept_friend_request, remove_friend, get_user_friends
+- web_search, get_weather, get_current_datetime
+
+Return JSON:
+{
+  "patternHash": "short_unique_identifier",
+  "triggerPhrase": "what user might say",
+  "toolSequence": ["tool1", "tool2"],
+  "expectedResponse": "how AI should respond",
+  "isActionable": true/false
+}
+
+If the suggestion doesn't map to specific tools, set toolSequence to [] and isActionable to false.`;
+
+    const response = await fetch("https://ai.gateway.lovable.dev/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "google/gemini-2.5-flash-lite",
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    if (!response.ok) {
+      return { success: false };
+    }
+
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content || "";
+    
+    // Extract JSON
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0]);
+      return { success: true, pattern: parsed };
+    }
+
+    return { success: false };
+  } catch (e) {
+    console.error("Failed to parse suggestion:", e);
+    return { success: false };
   }
 }
 
@@ -5113,6 +5629,20 @@ Example 15 - "Where is My Teams page?" / "Show me my teams"
 Example 16 - "How do I use the sidebar?" / "Where is the sidebar menu?"
 → On desktop, the sidebar is on the left side with links to Home, My Teams, Find Teammates, Friends, Notifications, and Profile
 → On mobile, tap the menu icon (☰) in the top-left to open the sidebar
+
+Example 17 - "Enrol me in hackathon X" / "Register me for hackathon Y" / "I want to join hackathon Z"
+→ This is a SPECIAL workflow. When user asks to be enrolled/registered in a hackathon:
+  1. Search for the hackathon using search_hackathons
+  2. Use visit_hackathon_website to get the official registration link
+  3. Provide the link with an "Open Link" action button
+  4. Explain: "To register, please visit their official website. I can also create a team for you in this hackathon if you'd like!"
+  5. Offer to create a team: "Would you like me to create a team for this hackathon?"
+→ NEVER say "you are enrolled" - clarify that official registration happens on the hackathon's website
+
+Example 18 - User suggests AI behavior: "When I say X, you should do Y" / "Learn this pattern" / "Add this logic"
+→ Use suggest_ai_behavior tool
+→ Safe suggestions are auto-applied, risky ones go to admin for review
+→ Harmful suggestions (bypassing security, mass deletion, etc.) are auto-denied
 
 ═══════════════════════════════════════════════════════════════
 CRITICAL RULES (MEMORIZE THESE)
