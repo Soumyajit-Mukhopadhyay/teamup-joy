@@ -197,6 +197,48 @@ export type Database = {
         }
         Relationships: []
       }
+      ai_pending_suggestions: {
+        Row: {
+          admin_notes: string | null
+          created_at: string
+          id: string
+          parsed_pattern: Json | null
+          reviewed_at: string | null
+          reviewed_by: string | null
+          risk_level: string | null
+          safety_analysis: Json | null
+          status: string | null
+          suggestion_text: string
+          user_id: string
+        }
+        Insert: {
+          admin_notes?: string | null
+          created_at?: string
+          id?: string
+          parsed_pattern?: Json | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          risk_level?: string | null
+          safety_analysis?: Json | null
+          status?: string | null
+          suggestion_text: string
+          user_id: string
+        }
+        Update: {
+          admin_notes?: string | null
+          created_at?: string
+          id?: string
+          parsed_pattern?: Json | null
+          reviewed_at?: string | null
+          reviewed_by?: string | null
+          risk_level?: string | null
+          safety_analysis?: Json | null
+          status?: string | null
+          suggestion_text?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       friend_messages: {
         Row: {
           content: string | null
